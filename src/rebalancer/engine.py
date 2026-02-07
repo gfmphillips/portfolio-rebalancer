@@ -6,6 +6,7 @@ from .models import (
     Position,
     RebalanceConfig,
     RebalanceResult,
+    TaxImpact,
     TickerMapping,
     Trade,
 )
@@ -128,6 +129,31 @@ def rebalance(
         for tw in wash_warnings:
             warnings.append(tw)
 
+    # Compute tax impact summary (only taxable sell trades matter)
+    total_gains = Decimal("0")
+    total_losses = Decimal("0")
+    taxable_count = 0
+    for t in trades:
+        if (
+            t.action == "SELL"
+            and t.account_type == AccountType.TAXABLE
+            and t.estimated_gain_loss is not None
+        ):
+            taxable_count += 1
+            if t.estimated_gain_loss > 0:
+                total_gains += t.estimated_gain_loss
+            else:
+                total_losses += t.estimated_gain_loss
+
+    tax_impact = TaxImpact(
+        estimated_total_gains=total_gains,
+        estimated_total_losses=total_losses,
+        estimated_net=(total_gains + total_losses).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        ),
+        taxable_trades_count=taxable_count,
+    )
+
     return RebalanceResult(
         total_portfolio_value=total_value,
         current_allocation=current_allocation,
@@ -135,6 +161,7 @@ def rebalance(
         drift=drift,
         trades=trades,
         warnings=warnings,
+        tax_impact=tax_impact,
     )
 
 
@@ -278,45 +305,36 @@ def _generate_rebalance_trades(
             )
 
             trade_warnings: list[str] = []
+            est_gain_loss: Decimal | None = None
+
+            # Compute per-share gain/loss if we have cost basis
+            if p.cost_basis_total is not None and p.quantity > 0:
+                gain_per_share = (p.market_value - p.cost_basis_total) / p.quantity
+                est_gain_loss = (gain_per_share * shares).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
 
             # Check for taxable gain
             if (
                 p.account_type == AccountType.TAXABLE
                 and config.avoid_gains_in_taxable
-                and p.cost_basis_total is not None
+                and est_gain_loss is not None
+                and est_gain_loss > 0
             ):
-                gain_per_share = (
-                    p.market_value - p.cost_basis_total
-                ) / p.quantity if p.quantity > 0 else Decimal("0")
-                if gain_per_share > 0:
-                    estimated_gain = (gain_per_share * shares).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                    trade_warnings.append(
-                        f"Selling at estimated gain of ${estimated_gain} in taxable account"
-                    )
+                trade_warnings.append(
+                    f"Selling at estimated gain of ${est_gain_loss} in taxable account"
+                )
 
             # Check for TLH opportunity
-            is_loss = False
-            if (
+            is_loss = (
                 p.account_type == AccountType.TAXABLE
-                and p.cost_basis_total is not None
-                and p.quantity > 0
-            ):
-                gain_per_share = (
-                    p.market_value - p.cost_basis_total
-                ) / p.quantity
-                if gain_per_share < 0:
-                    is_loss = True
-                    estimated_loss = abs(
-                        (gain_per_share * shares).quantize(
-                            Decimal("0.01"), rounding=ROUND_HALF_UP
-                        )
-                    )
+                and est_gain_loss is not None
+                and est_gain_loss < 0
+            )
 
             reasoning = f"Reduce overweight {cls}"
             if is_loss and config.tlh_enabled:
-                reasoning += f" (TLH opportunity: ~${estimated_loss} loss)"
+                reasoning += f" (TLH opportunity: ~${abs(est_gain_loss)} loss)"
 
             trades.append(
                 Trade(
@@ -328,6 +346,7 @@ def _generate_rebalance_trades(
                     estimated_value=actual_value,
                     reasoning=reasoning,
                     warnings=trade_warnings,
+                    estimated_gain_loss=est_gain_loss,
                 )
             )
             remaining -= actual_value

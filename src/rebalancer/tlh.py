@@ -47,7 +47,13 @@ def check_wash_sales(
 
     Since all trades are generated at once, we check if any sell-at-loss in a
     taxable account has a corresponding buy of the same or similar ticker
-    in ANY account.
+    in ANY account (including IRAs, 401ks, etc.).
+
+    NOTE: This check assumes all proposed trades execute on the same day.
+    It does NOT track the 30-day window around historical trades. If you
+    have bought similar securities in the past 30 days (or plan to within
+    the next 30 days), additional wash sale risk may exist beyond what
+    is detected here.
 
     Returns a list of warning strings.
     """
@@ -64,6 +70,12 @@ def check_wash_sales(
 
     if not taxable_sells or not all_buys:
         return warnings
+
+    # Add a general caveat about the 30-day window
+    _30_DAY_NOTE = (
+        "Note: Wash sale rules apply to purchases 30 days before AND after a "
+        "loss sale. Review recent and planned trades outside this tool."
+    )
 
     # Build set of tickers being bought (including similar tickers)
     buy_tickers: set[str] = set()
@@ -123,6 +135,9 @@ def check_wash_sales(
                         f"{buy.ticker} in {buy.account_name}. "
                         f"The loss may be disallowed."
                     )
+
+    if warnings:
+        warnings.append(_30_DAY_NOTE)
 
     return warnings
 

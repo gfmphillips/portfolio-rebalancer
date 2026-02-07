@@ -52,7 +52,13 @@ def load_config(path: Path) -> RebalanceConfig:
     accounts_raw = data.get("accounts", {})
 
     account_mappings = {}
+    valid_types = {e.value for e in AccountType}
     for substr, acct_type_str in accounts_raw.items():
+        if acct_type_str not in valid_types:
+            raise ValueError(
+                f"Invalid account type '{acct_type_str}' for '{substr}'. "
+                f"Valid types: {', '.join(sorted(valid_types))}"
+            )
         account_mappings[substr] = AccountType(acct_type_str)
 
     return RebalanceConfig(

@@ -44,6 +44,14 @@ class Trade(BaseModel):
     estimated_value: Decimal
     reasoning: str
     warnings: list[str] = []
+    estimated_gain_loss: Decimal | None = None  # positive = gain, negative = loss
+
+
+class TaxImpact(BaseModel):
+    estimated_total_gains: Decimal = Decimal("0")
+    estimated_total_losses: Decimal = Decimal("0")
+    estimated_net: Decimal = Decimal("0")
+    taxable_trades_count: int = 0
 
 
 class RebalanceResult(BaseModel):
@@ -53,6 +61,7 @@ class RebalanceResult(BaseModel):
     drift: dict[str, Decimal]
     trades: list[Trade]
     warnings: list[str]
+    tax_impact: TaxImpact = TaxImpact()
 
 
 class RebalanceConfig(BaseModel):

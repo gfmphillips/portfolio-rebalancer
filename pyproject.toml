@@ -8,10 +8,13 @@ dependencies = [
     "typer>=0.9",
     "rich>=13.0",
     "pyyaml>=6.0",
+    "streamlit>=1.30",
+    "plotly>=5.18",
 ]
 
 [project.scripts]
 rebalancer = "rebalancer.cli:app"
+rebalancer-web = "rebalancer.run_web:main"
 
 [build-system]
 requires = ["hatchling"]

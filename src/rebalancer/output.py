@@ -150,6 +150,18 @@ def print_rebalance_report(result: RebalanceResult) -> None:
     else:
         console.print("\n[green]Portfolio is within target thresholds. No trades needed.[/green]")
 
+    # Tax impact summary
+    ti = result.tax_impact
+    if ti.taxable_trades_count > 0:
+        console.print()
+        console.print("[bold]Estimated Tax Impact (Taxable Accounts Only)[/bold]")
+        if ti.estimated_total_gains > 0:
+            console.print(f"  Estimated gains:  [red]${ti.estimated_total_gains:,.2f}[/red]")
+        if ti.estimated_total_losses < 0:
+            console.print(f"  Estimated losses: [green]${ti.estimated_total_losses:,.2f}[/green]")
+        net_style = "red" if ti.estimated_net > 0 else "green"
+        console.print(f"  Net:              [{net_style}]${ti.estimated_net:,.2f}[/{net_style}]")
+
     # Global warnings
     if result.warnings:
         console.print()
@@ -194,6 +206,16 @@ def write_markdown_report(result: RebalanceResult, path: Path) -> None:
             )
     else:
         lines.append("\n**Portfolio is within target thresholds. No trades needed.**\n")
+
+    # Tax impact
+    ti = result.tax_impact
+    if ti.taxable_trades_count > 0:
+        lines.append("\n## Estimated Tax Impact (Taxable Accounts Only)\n")
+        if ti.estimated_total_gains > 0:
+            lines.append(f"- Estimated gains: ${ti.estimated_total_gains:,.2f}")
+        if ti.estimated_total_losses < 0:
+            lines.append(f"- Estimated losses: ${ti.estimated_total_losses:,.2f}")
+        lines.append(f"- **Net: ${ti.estimated_net:,.2f}**")
 
     # Warnings
     if result.warnings:
