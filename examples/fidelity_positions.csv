@@ -1,0 +1,15 @@
+Account Name/Number,Symbol,Description,Quantity,Last Price,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
+Individual - TOD...XXX123456,,,,,,,,,,,,
+,VTI,VANGUARD TOTAL STOCK MKT ETF,100,"$250.00","$25,000.00","$50.00",0.20%,"$5,000.00",25.00%,50.00%,"$20,000.00",$200.00,Cash
+,VXUS,VANGUARD TOTAL INTL STOCK ETF,200,"$60.00","$12,000.00","$24.00",0.20%,"$2,000.00",20.00%,24.00%,"$10,000.00",$50.00,Cash
+,BND,VANGUARD TOTAL BOND MKT ETF,50,"$72.00","$3,600.00","-$18.00",-0.50%,"-$400.00",-10.00%,7.20%,"$4,000.00",$80.00,Cash
+,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,,,"$2,400.00",,,,4.80%,,,,Cash
+ROTH IRA...XXX789012,,,,,,,,,,,,
+,FXAIX,FIDELITY 500 INDEX FUND,50,"$200.00","$10,000.00","$30.00",0.30%,"$3,000.00",42.86%,55.56%,"$7,000.00",$140.00,Cash
+,VXUS,VANGUARD TOTAL INTL STOCK ETF,50,"$60.00","$3,000.00","$6.00",0.20%,"$500.00",20.00%,16.67%,"$2,500.00",$50.00,Cash
+,BND,VANGUARD TOTAL BOND MKT ETF,50,"$72.00","$3,600.00","-$18.00",-0.50%,"$100.00",2.86%,20.00%,"$3,500.00",$70.00,Cash
+,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,,,"$1,400.00",,,,7.78%,,,,Cash
+
+The totals for all of your accounts.
+Account Name/Number,Symbol,Description,Quantity,Last Price,Current Value
+,,,"","","$61,000.00"

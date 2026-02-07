@@ -1,0 +1,18 @@
+rebalance:
+  threshold_pct: 3.0
+  min_trade_value: 50
+
+tax:
+  tlh_enabled: true
+  avoid_gains_in_taxable: true
+
+cash_to_invest: 0
+
+# Map account name substrings to account types
+accounts:
+  "Individual": taxable
+  "Taxable": taxable
+  "ROTH IRA": roth_ira
+  "TRADITIONAL IRA": traditional_ira
+  "Rollover IRA": traditional_ira
+  "401(K)": 401k

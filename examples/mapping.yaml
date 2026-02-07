@@ -1,0 +1,96 @@
+# US Stocks — Total Market
+VTI:
+  asset_class: us_stocks
+  similar: [ITOT, SCHB, SPTM]
+ITOT:
+  asset_class: us_stocks
+  similar: [VTI, SCHB, SPTM]
+
+# US Stocks — Large Cap / S&P 500
+FXAIX:
+  asset_class: us_stocks
+  similar: [VOO, SPY, IVV]
+IVV:
+  asset_class: us_stocks
+  similar: [VOO, SPY, FXAIX]
+
+# US Stocks — Mid Cap
+VO:
+  asset_class: us_stocks
+  similar: [IJH, SCHM]
+
+# US Stocks — Small Cap / Value
+AVUV:
+  asset_class: us_stocks
+  similar: [VBR, IJS, SLYV]
+VB:
+  asset_class: us_stocks
+  similar: [IJR, SCHA]
+
+# International Stocks — Developed
+VXUS:
+  asset_class: international_stocks
+  similar: [IXUS, SCHF]
+VGK:
+  asset_class: international_stocks
+  similar: [EFA, IEFA, FEZ]
+VEA:
+  asset_class: international_stocks
+  similar: [IEFA, EFA, SCHF]
+IEFA:
+  asset_class: international_stocks
+  similar: [VEA, EFA, SCHF]
+
+# International Stocks — Small Cap
+VSS:
+  asset_class: international_stocks
+  similar: [SCHC, GWX]
+
+# International Stocks — Emerging Markets
+IEMG:
+  asset_class: international_stocks
+  similar: [VWO, EEM, SCHE]
+VWO:
+  asset_class: international_stocks
+  similar: [IEMG, EEM, SCHE]
+
+# REITs
+VNQ:
+  asset_class: reit
+  similar: [SCHH, IYR, XLRE]
+VNQI:
+  asset_class: reit
+  similar: [IFGL, RWX, HAUZ]
+
+# Bonds — Aggregate / Total
+BND:
+  asset_class: bonds
+  similar: [AGG, SCHZ]
+
+# Bonds — Short-Term Corporate
+VCSH:
+  asset_class: bonds
+  similar: [IGSB, SPSB]
+
+# Bonds — Short-Term Government
+BSV:
+  asset_class: bonds
+  similar: [VGSH, SHY, SCHO]
+
+# Bonds — Intermediate-Term Treasury
+VGIT:
+  asset_class: bonds
+  similar: [IEF, SCHR]
+
+# Bonds — International Treasury
+IGOV:
+  asset_class: bonds
+  similar: [BWX, IAGG]
+
+# Cash / Money Market
+SPAXX:
+  asset_class: cash
+FDRXX:
+  asset_class: cash
+FCASH:
+  asset_class: cash
