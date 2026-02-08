@@ -15,8 +15,8 @@ from rebalancer.models import (
 @pytest.fixture
 def targets_50_20_25_5():
     return [
-        AllocationTarget(asset_class="us_stocks", target_pct=Decimal("50")),
-        AllocationTarget(asset_class="international_stocks", target_pct=Decimal("20")),
+        AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+        AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
         AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
         AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
     ]
@@ -43,10 +43,10 @@ class TestRebalanceBasic:
         result = rebalance(
             sample_positions, targets_50_20_25_5, sample_mapping, sample_config
         )
-        # us_stocks: VTI(25000) + FXAIX(10000) = 35000 / 61000 = 57.38%
-        assert result.current_allocation["us_stocks"] == Decimal("57.38")
-        # international_stocks: VXUS(12000 + 3000) = 15000 / 61000 = 24.59%
-        assert result.current_allocation["international_stocks"] == Decimal("24.59")
+        # us_equity: VTI(25000) + FXAIX(10000) = 35000 / 61000 = 57.38%
+        assert result.current_allocation["us_equity"] == Decimal("57.38")
+        # intl_equity: VXUS(12000 + 3000) = 15000 / 61000 = 24.59%
+        assert result.current_allocation["intl_equity"] == Decimal("24.59")
         # bonds: BND(3600 + 3600) = 7200 / 61000 = 11.80%
         assert result.current_allocation["bonds"] == Decimal("11.80")
         # cash: SPAXX(2400 + 1400) = 3800 / 61000 = 6.23%
@@ -58,10 +58,10 @@ class TestRebalanceBasic:
         result = rebalance(
             sample_positions, targets_50_20_25_5, sample_mapping, sample_config
         )
-        # us_stocks: 57.38 - 50 = +7.38 (overweight)
-        assert result.drift["us_stocks"] == Decimal("7.38")
-        # international_stocks: 24.59 - 20 = +4.59 (overweight)
-        assert result.drift["international_stocks"] == Decimal("4.59")
+        # us_equity: 57.38 - 50 = +7.38 (overweight)
+        assert result.drift["us_equity"] == Decimal("7.38")
+        # intl_equity: 24.59 - 20 = +4.59 (overweight)
+        assert result.drift["intl_equity"] == Decimal("4.59")
         # bonds: 11.80 - 25 = -13.20 (underweight)
         assert result.drift["bonds"] == Decimal("-13.20")
         # cash: 6.23 - 5 = +1.23 (slightly overweight, within threshold)
@@ -129,8 +129,8 @@ class TestRebalanceBasic:
             ),
         ]
         targets = [
-            AllocationTarget(asset_class="us_stocks", target_pct=Decimal("50")),
-            AllocationTarget(asset_class="international_stocks", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
             AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
             AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
         ]
@@ -212,7 +212,7 @@ class TestRebalanceTaxPriority:
             ),
         ]
         targets = [
-            AllocationTarget(asset_class="us_stocks", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
             AllocationTarget(asset_class="bonds", target_pct=Decimal("50")),
         ]
         config = RebalanceConfig(
@@ -252,7 +252,7 @@ class TestRebalanceTaxPriority:
             ),
         ]
         targets = [
-            AllocationTarget(asset_class="us_stocks", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
             AllocationTarget(asset_class="bonds", target_pct=Decimal("50")),
         ]
         config = RebalanceConfig(

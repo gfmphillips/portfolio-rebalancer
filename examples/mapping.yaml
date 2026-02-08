@@ -1,57 +1,57 @@
 # US Stocks — Total Market
 VTI:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [ITOT, SCHB, SPTM]
 ITOT:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [VTI, SCHB, SPTM]
 
 # US Stocks — Large Cap / S&P 500
 FXAIX:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [VOO, SPY, IVV]
 IVV:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [VOO, SPY, FXAIX]
 
 # US Stocks — Mid Cap
 VO:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [IJH, SCHM]
 
 # US Stocks — Small Cap / Value
 AVUV:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [VBR, IJS, SLYV]
 VB:
-  asset_class: us_stocks
+  asset_class: us_equity
   similar: [IJR, SCHA]
 
 # International Stocks — Developed
 VXUS:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [IXUS, SCHF]
 VGK:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [EFA, IEFA, FEZ]
 VEA:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [IEFA, EFA, SCHF]
 IEFA:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [VEA, EFA, SCHF]
 
 # International Stocks — Small Cap
 VSS:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [SCHC, GWX]
 
 # International Stocks — Emerging Markets
 IEMG:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [VWO, EEM, SCHE]
 VWO:
-  asset_class: international_stocks
+  asset_class: intl_equity
   similar: [IEMG, EEM, SCHE]
 
 # REITs

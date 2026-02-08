@@ -103,11 +103,11 @@ def sample_positions():
 @pytest.fixture
 def sample_mapping():
     return {
-        "VTI": TickerMapping(asset_class="us_stocks", similar_tickers=["ITOT", "SCHB", "SPTM"]),
-        "VXUS": TickerMapping(asset_class="international_stocks", similar_tickers=["IXUS", "SCHF"]),
+        "VTI": TickerMapping(asset_class="us_equity", similar_tickers=["ITOT", "SCHB", "SPTM"]),
+        "VXUS": TickerMapping(asset_class="intl_equity", similar_tickers=["IXUS", "SCHF"]),
         "BND": TickerMapping(asset_class="bonds", similar_tickers=["AGG", "SCHZ"]),
         "SPAXX": TickerMapping(asset_class="cash"),
-        "FXAIX": TickerMapping(asset_class="us_stocks", similar_tickers=["VOO", "SPY", "IVV"]),
+        "FXAIX": TickerMapping(asset_class="us_equity", similar_tickers=["VOO", "SPY", "IVV"]),
     }
 
 

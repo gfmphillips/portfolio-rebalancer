@@ -1,3 +1,4 @@
+# Legacy format — see unified_config.yaml for the new format
 rebalance:
   threshold_pct: 3.0
   min_trade_value: 50

@@ -3,7 +3,16 @@ from pathlib import Path
 
 import yaml
 
-from .models import AccountType, AllocationTarget, RebalanceConfig, TickerMapping
+from .models import (
+    AccountType,
+    AllocationTarget,
+    CashConfig,
+    OutputConfig,
+    PrecisionConfig,
+    RebalanceConfig,
+    SortKey,
+    TickerMapping,
+)
 
 
 def load_targets(path: Path) -> list[AllocationTarget]:
@@ -69,3 +78,83 @@ def load_config(path: Path) -> RebalanceConfig:
         cash_to_invest=Decimal(str(data.get("cash_to_invest", 0))),
         account_mappings=account_mappings,
     )
+
+
+def is_unified_config(path: Path) -> bool:
+    """Check whether a config file uses the unified format (has 'allocation' key)."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return isinstance(data, dict) and "allocation" in data
+
+
+def load_unified_config(
+    path: Path,
+) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig]:
+    """Parse a unified config YAML and return (targets, config, output_config, cash_config)."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+
+    # --- allocation → list[AllocationTarget] ---
+    allocation_raw = data.get("allocation", {})
+    targets = []
+    for asset_class, pct in allocation_raw.items():
+        targets.append(
+            AllocationTarget(asset_class=asset_class, target_pct=Decimal(str(pct)))
+        )
+    total = sum(t.target_pct for t in targets)
+    if total != Decimal("100"):
+        raise ValueError(f"Target allocations must sum to 100, got {total}")
+
+    # --- rebalance → threshold_pct, min_trade_value ---
+    rebalance = data.get("rebalance", {})
+
+    # --- tax.enabled → tlh_enabled + avoid_gains_in_taxable ---
+    tax = data.get("tax", {})
+    tax_enabled = tax.get("enabled", False)
+
+    # --- accounts → account_mappings ---
+    accounts_raw = data.get("accounts", {})
+    account_mappings: dict[str, AccountType] = {}
+    valid_types = {e.value for e in AccountType}
+    for substr, acct_type_str in accounts_raw.items():
+        if acct_type_str not in valid_types:
+            raise ValueError(
+                f"Invalid account type '{acct_type_str}' for '{substr}'. "
+                f"Valid types: {', '.join(sorted(valid_types))}"
+            )
+        account_mappings[substr] = AccountType(acct_type_str)
+
+    rebalance_config = RebalanceConfig(
+        threshold_pct=Decimal(str(rebalance.get("threshold_pct", 5.0))),
+        min_trade_value=Decimal(str(rebalance.get("min_trade_value", 500))),
+        tlh_enabled=tax_enabled,
+        avoid_gains_in_taxable=tax_enabled,
+        cash_to_invest=Decimal("0"),
+        account_mappings=account_mappings,
+    )
+
+    # --- cash → CashConfig ---
+    cash_raw = data.get("cash", {})
+    cash_config = CashConfig(
+        include_in_portfolio=cash_raw.get("include_in_portfolio", True),
+        external_cash_eur=Decimal(str(cash_raw.get("external_cash_eur", 0))),
+        external_cash_usd=Decimal(str(cash_raw.get("external_cash_usd", 0))),
+        eurusd_fx=Decimal(str(cash_raw.get("eurusd_fx", "1.10"))),
+    )
+
+    # --- output → OutputConfig ---
+    output_raw = data.get("output", {})
+    precision_raw = output_raw.get("precision", {})
+    precision = PrecisionConfig(
+        currency=precision_raw.get("currency", 0),
+        pct=precision_raw.get("pct", 2),
+    )
+    sort_order_raw = output_raw.get("sort_order", ["sells_first", "largest_trade_first"])
+    sort_order = [SortKey(s) for s in sort_order_raw]
+    output_config = OutputConfig(
+        show_only_actionable_trades=output_raw.get("show_only_actionable_trades", True),
+        sort_order=sort_order,
+        precision=precision,
+    )
+
+    return targets, rebalance_config, output_config, cash_config

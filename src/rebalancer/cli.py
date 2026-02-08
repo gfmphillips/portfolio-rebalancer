@@ -53,29 +53,62 @@ def show(
 @app.command()
 def run(
     positions: str = typer.Option(..., help="Path to Fidelity positions CSV"),
-    targets: str = typer.Option(..., help="Path to target allocation YAML"),
+    targets: str = typer.Option(None, help="Path to target allocation YAML (legacy format)"),
     mapping: str = typer.Option(..., help="Path to ticker mapping YAML"),
-    config: str = typer.Option(..., help="Path to config YAML"),
+    config: str = typer.Option(..., help="Path to config YAML (unified or legacy)"),
     output: str = typer.Option(None, help="Path to write markdown report"),
 ):
     """Run portfolio rebalancing and show trade recommendations."""
-    from .config import load_config, load_mapping, load_targets
+    from .config import (
+        is_unified_config,
+        load_config,
+        load_mapping,
+        load_targets,
+        load_unified_config,
+    )
     from .engine import rebalance
-    from .output import print_rebalance_report, write_markdown_report
+    from .models import OutputConfig
+    from .output import (
+        filter_actionable_trades,
+        print_rebalance_report,
+        sort_trades,
+        write_markdown_report,
+    )
     from .parser import parse_fidelity_csv
 
     pos_path = _validate_file(positions, "Positions CSV")
-    tgt_path = _validate_file(targets, "Targets YAML")
     map_path = _validate_file(mapping, "Mapping YAML")
     cfg_path = _validate_file(config, "Config YAML")
 
     positions_list = _safe_load("positions CSV", parse_fidelity_csv, pos_path)
-    targets_data = _safe_load("targets YAML", load_targets, tgt_path)
     mapping_data = _safe_load("mapping YAML", load_mapping, map_path)
-    config_data = _safe_load("config YAML", load_config, cfg_path)
+
+    # Auto-detect unified vs legacy config format
+    output_config = OutputConfig()
+    if is_unified_config(cfg_path):
+        targets_data, config_data, output_config, _cash_config = _safe_load(
+            "unified config YAML", load_unified_config, cfg_path
+        )
+    else:
+        # Legacy format requires --targets
+        if targets is None:
+            _console.print(
+                "[red]Error:[/red] --targets is required when using legacy config format."
+            )
+            raise typer.Exit(1)
+        tgt_path = _validate_file(targets, "Targets YAML")
+        targets_data = _safe_load("targets YAML", load_targets, tgt_path)
+        config_data = _safe_load("config YAML", load_config, cfg_path)
 
     result = rebalance(positions_list, targets_data, mapping_data, config_data)
-    print_rebalance_report(result)
+
+    # Apply sorting and filtering
+    result.trades = sort_trades(result.trades, output_config.sort_order)
+    result.trades = filter_actionable_trades(
+        result.trades, config_data.min_trade_value, output_config.show_only_actionable_trades
+    )
+
+    print_rebalance_report(result, output_config)
 
     if output:
-        write_markdown_report(result, Path(output))
+        write_markdown_report(result, Path(output), output_config)

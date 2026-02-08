@@ -21,11 +21,11 @@ from rebalancer.tlh import (
 @pytest.fixture
 def mapping_with_similar():
     return {
-        "VTI": TickerMapping(asset_class="us_stocks", similar_tickers=["ITOT", "SCHB"]),
-        "ITOT": TickerMapping(asset_class="us_stocks", similar_tickers=["VTI", "SCHB"]),
-        "SCHB": TickerMapping(asset_class="us_stocks", similar_tickers=["VTI", "ITOT"]),
-        "VXUS": TickerMapping(asset_class="international_stocks", similar_tickers=["IXUS"]),
-        "IXUS": TickerMapping(asset_class="international_stocks", similar_tickers=["VXUS"]),
+        "VTI": TickerMapping(asset_class="us_equity", similar_tickers=["ITOT", "SCHB"]),
+        "ITOT": TickerMapping(asset_class="us_equity", similar_tickers=["VTI", "SCHB"]),
+        "SCHB": TickerMapping(asset_class="us_equity", similar_tickers=["VTI", "ITOT"]),
+        "VXUS": TickerMapping(asset_class="intl_equity", similar_tickers=["IXUS"]),
+        "IXUS": TickerMapping(asset_class="intl_equity", similar_tickers=["VXUS"]),
         "BND": TickerMapping(asset_class="bonds", similar_tickers=["AGG"]),
         "AGG": TickerMapping(asset_class="bonds", similar_tickers=["BND"]),
         "SPAXX": TickerMapping(asset_class="cash"),
@@ -47,7 +47,7 @@ class TestFindTLHOpportunities:
             ),
         ]
         mapping = {
-            "VTI": TickerMapping(asset_class="us_stocks"),
+            "VTI": TickerMapping(asset_class="us_equity"),
         }
         opportunities = find_tlh_opportunities(positions, mapping)
         assert len(opportunities) == 1
@@ -67,7 +67,7 @@ class TestFindTLHOpportunities:
                 cost_basis_total=Decimal("10000"),  # $1000 gain
             ),
         ]
-        mapping = {"VTI": TickerMapping(asset_class="us_stocks")}
+        mapping = {"VTI": TickerMapping(asset_class="us_equity")}
         opportunities = find_tlh_opportunities(positions, mapping)
         assert len(opportunities) == 0
 
@@ -84,7 +84,7 @@ class TestFindTLHOpportunities:
                 cost_basis_total=Decimal("10000"),
             ),
         ]
-        mapping = {"VTI": TickerMapping(asset_class="us_stocks")}
+        mapping = {"VTI": TickerMapping(asset_class="us_equity")}
         opportunities = find_tlh_opportunities(positions, mapping)
         assert len(opportunities) == 0
 
@@ -112,8 +112,8 @@ class TestFindTLHOpportunities:
             ),
         ]
         mapping = {
-            "VTI": TickerMapping(asset_class="us_stocks"),
-            "VXUS": TickerMapping(asset_class="international_stocks"),
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "VXUS": TickerMapping(asset_class="intl_equity"),
         }
         opportunities = find_tlh_opportunities(positions, mapping)
         assert len(opportunities) == 2
@@ -227,7 +227,7 @@ class TestCheckWashSales:
                 action="SELL",
                 shares=Decimal("10"),
                 estimated_value=Decimal("1000"),
-                reasoning="Reduce overweight us_stocks",
+                reasoning="Reduce overweight us_equity",
                 warnings=["Selling at estimated gain of $200 in taxable account"],
             ),
             Trade(
@@ -274,7 +274,7 @@ class TestSuggestTLHReplacements:
         held = {"VTI", "VXUS", "BND", "SPAXX"}
         replacements = suggest_tlh_replacements("VTI", mapping_with_similar, held)
         # VTI is similar to ITOT and SCHB, so neither should be suggested
-        # But other us_stocks tickers not in held_tickers could be
+        # But other us_equity tickers not in held_tickers could be
         # In our mapping, ITOT and SCHB are similar to VTI, so no good replacements
         # unless they're not in held
         assert "ITOT" not in replacements or "ITOT" not in held
@@ -335,6 +335,25 @@ class TestEndToEnd:
         # Total portfolio should not change (cash not yet invested)
         assert result.total_portfolio_value == Decimal("61000.00")
 
+    def test_full_rebalance_with_unified_config(self, examples_dir):
+        """End-to-end test using the unified config format."""
+        from rebalancer.config import load_mapping, load_unified_config
+        from rebalancer.parser import parse_fidelity_csv
+
+        positions = parse_fidelity_csv(examples_dir / "fidelity_positions.csv")
+        mapping = load_mapping(examples_dir / "mapping.yaml")
+        targets, config, output_config, cash_config = load_unified_config(
+            examples_dir / "unified_config.yaml"
+        )
+
+        result = rebalance(positions, targets, mapping, config)
+
+        assert result.total_portfolio_value == Decimal("61000.00")
+        assert len(result.current_allocation) >= 4
+        # Tax should be disabled in unified config
+        assert config.tlh_enabled is False
+        assert config.avoid_gains_in_taxable is False
+
     def test_markdown_report_generation(self, examples_dir, tmp_path):
         """Test that markdown report is generated correctly."""
         from rebalancer.config import load_config, load_mapping, load_targets
@@ -356,4 +375,4 @@ class TestEndToEnd:
         assert "Portfolio Rebalance Report" in content
         assert "$61,000.00" in content
         assert "bonds" in content
-        assert "us_stocks" in content
+        assert "us_equity" in content

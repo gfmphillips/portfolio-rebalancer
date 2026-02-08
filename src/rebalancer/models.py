@@ -64,6 +64,33 @@ class RebalanceResult(BaseModel):
     tax_impact: TaxImpact = TaxImpact()
 
 
+class PrecisionConfig(BaseModel):
+    currency: int = 0  # 0→"$1,234", 2→"$1,234.56"
+    pct: int = 2
+
+
+class SortKey(str, Enum):
+    SELLS_FIRST = "sells_first"
+    BUYS_FIRST = "buys_first"
+    LARGEST_TRADE_FIRST = "largest_trade_first"
+    SMALLEST_TRADE_FIRST = "smallest_trade_first"
+    BY_ACCOUNT = "by_account"
+    BY_TICKER = "by_ticker"
+
+
+class OutputConfig(BaseModel):
+    show_only_actionable_trades: bool = True
+    sort_order: list[SortKey] = [SortKey.SELLS_FIRST, SortKey.LARGEST_TRADE_FIRST]
+    precision: PrecisionConfig = PrecisionConfig()
+
+
+class CashConfig(BaseModel):
+    include_in_portfolio: bool = True
+    external_cash_eur: Decimal = Decimal("0")
+    external_cash_usd: Decimal = Decimal("0")
+    eurusd_fx: Decimal = Decimal("1.10")
+
+
 class RebalanceConfig(BaseModel):
     threshold_pct: Decimal = Decimal("3.0")
     min_trade_value: Decimal = Decimal("50")

@@ -1,0 +1,35 @@
+allocation:
+  cash: 10
+  bonds: 20
+  reit: 5
+  us_equity: 45
+  intl_equity: 20
+
+rebalance:
+  threshold_pct: 5.0
+  min_trade_value: 500
+
+cash:
+  include_in_portfolio: true
+  external_cash_eur: 0
+  external_cash_usd: 0
+  eurusd_fx: 1.10
+
+tax:
+  enabled: false
+
+accounts:
+  "Individual": taxable
+  "Taxable": taxable
+  "Brokerage": taxable
+  "ROTH": roth_ira
+  "Rollover": traditional_ira
+  "Traditional": traditional_ira
+  "401(K)": 401k
+
+output:
+  show_only_actionable_trades: true
+  sort_order: [sells_first, largest_trade_first]
+  precision:
+    currency: 0
+    pct: 2
