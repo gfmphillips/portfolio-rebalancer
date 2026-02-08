@@ -496,7 +496,7 @@ with tab_rebalance:
     if not data_ok:
         st.error(f"Cannot load data: {data_error}")
     else:
-        result = rebalance(positions, targets, mapping, config)
+        result = rebalance(all_positions, targets, mapping, config)
         st.session_state.result = result
 
         st.subheader("Allocation vs Target")
