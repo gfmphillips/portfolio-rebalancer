@@ -124,3 +124,123 @@ def sample_config():
             "ROTH IRA": AccountType.ROTH_IRA,
         },
     )
+
+
+@pytest.fixture
+def multi_account_positions():
+    """Multi-account portfolio with constrained cash in tax-advantaged accounts.
+
+    Taxable A: VTI $30K, SPAXX $5K cash
+    Taxable B: VXUS $20K, SPAXX $3K cash
+    Rollover IRA: VCSH $10K, FDRXX $500 cash
+    Roth IRA: FXAIX $8K, BND $2K, SPAXX $300 cash
+    """
+    return [
+        # Taxable A
+        Position(
+            account_name="Taxable A",
+            account_type=AccountType.TAXABLE,
+            ticker="VTI",
+            description="VANGUARD TOTAL STOCK MKT ETF",
+            quantity=Decimal("120"),
+            price=Decimal("250.00"),
+            market_value=Decimal("30000.00"),
+            cost_basis_total=Decimal("24000.00"),
+        ),
+        Position(
+            account_name="Taxable A",
+            account_type=AccountType.TAXABLE,
+            ticker="SPAXX",
+            description="FIDELITY GOVERNMENT MONEY MARKET",
+            quantity=Decimal("0"),
+            price=Decimal("0"),
+            market_value=Decimal("5000.00"),
+            cost_basis_total=None,
+        ),
+        # Taxable B
+        Position(
+            account_name="Taxable B",
+            account_type=AccountType.TAXABLE,
+            ticker="VXUS",
+            description="VANGUARD TOTAL INTL STOCK ETF",
+            quantity=Decimal("333"),
+            price=Decimal("60.00"),
+            market_value=Decimal("20000.00"),
+            cost_basis_total=Decimal("18000.00"),
+        ),
+        Position(
+            account_name="Taxable B",
+            account_type=AccountType.TAXABLE,
+            ticker="SPAXX",
+            description="FIDELITY GOVERNMENT MONEY MARKET",
+            quantity=Decimal("0"),
+            price=Decimal("0"),
+            market_value=Decimal("3000.00"),
+            cost_basis_total=None,
+        ),
+        # Rollover IRA (tax-advantaged, isolated cash)
+        Position(
+            account_name="Rollover IRA",
+            account_type=AccountType.TRADITIONAL_IRA,
+            ticker="VCSH",
+            description="VANGUARD SHORT-TERM CORP BOND ETF",
+            quantity=Decimal("125"),
+            price=Decimal("80.00"),
+            market_value=Decimal("10000.00"),
+            cost_basis_total=Decimal("9500.00"),
+        ),
+        Position(
+            account_name="Rollover IRA",
+            account_type=AccountType.TRADITIONAL_IRA,
+            ticker="FDRXX",
+            description="FIDELITY GOVERNMENT CASH RESERVES",
+            quantity=Decimal("0"),
+            price=Decimal("0"),
+            market_value=Decimal("500.00"),
+            cost_basis_total=None,
+        ),
+        # Roth IRA (tax-advantaged, isolated cash)
+        Position(
+            account_name="Roth IRA",
+            account_type=AccountType.ROTH_IRA,
+            ticker="FXAIX",
+            description="FIDELITY 500 INDEX FUND",
+            quantity=Decimal("40"),
+            price=Decimal("200.00"),
+            market_value=Decimal("8000.00"),
+            cost_basis_total=Decimal("6000.00"),
+        ),
+        Position(
+            account_name="Roth IRA",
+            account_type=AccountType.ROTH_IRA,
+            ticker="BND",
+            description="VANGUARD TOTAL BOND MKT ETF",
+            quantity=Decimal("28"),
+            price=Decimal("72.00"),
+            market_value=Decimal("2016.00"),
+            cost_basis_total=Decimal("2000.00"),
+        ),
+        Position(
+            account_name="Roth IRA",
+            account_type=AccountType.ROTH_IRA,
+            ticker="SPAXX",
+            description="FIDELITY GOVERNMENT MONEY MARKET",
+            quantity=Decimal("0"),
+            price=Decimal("0"),
+            market_value=Decimal("300.00"),
+            cost_basis_total=None,
+        ),
+    ]
+
+
+@pytest.fixture
+def multi_account_mapping():
+    return {
+        "VTI": TickerMapping(asset_class="us_equity", similar_tickers=["ITOT", "SCHB"]),
+        "VXUS": TickerMapping(asset_class="intl_equity", similar_tickers=["IXUS"]),
+        "VCSH": TickerMapping(asset_class="bonds", similar_tickers=["BSV"]),
+        "BND": TickerMapping(asset_class="bonds", similar_tickers=["AGG"]),
+        "SPAXX": TickerMapping(asset_class="cash"),
+        "FDRXX": TickerMapping(asset_class="cash"),
+        "FXAIX": TickerMapping(asset_class="us_equity", similar_tickers=["VOO", "SPY"]),
+    }
