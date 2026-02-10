@@ -342,7 +342,7 @@ class TestEndToEnd:
 
         positions = parse_fidelity_csv(examples_dir / "fidelity_positions.csv")
         mapping = load_mapping(examples_dir / "mapping.yaml")
-        targets, config, output_config, cash_config = load_unified_config(
+        targets, config, output_config, cash_config, _gt = load_unified_config(
             examples_dir / "unified_config.yaml"
         )
 

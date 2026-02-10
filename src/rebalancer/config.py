@@ -7,6 +7,7 @@ from .models import (
     AccountType,
     AllocationTarget,
     CashConfig,
+    GermanTaxConfig,
     OutputConfig,
     PrecisionConfig,
     RebalanceConfig,
@@ -46,6 +47,7 @@ def load_mapping(path: Path) -> dict[str, TickerMapping]:
             mappings[ticker] = TickerMapping(
                 asset_class=info["asset_class"],
                 similar_tickers=info.get("similar", []),
+                domicile=info.get("domicile", "US"),
             )
 
     return mappings
@@ -89,8 +91,8 @@ def is_unified_config(path: Path) -> bool:
 
 def load_unified_config(
     path: Path,
-) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig]:
-    """Parse a unified config YAML and return (targets, config, output_config, cash_config)."""
+) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig, GermanTaxConfig]:
+    """Parse a unified config YAML and return (targets, config, output_config, cash_config, german_tax_config)."""
     with open(path) as f:
         data = yaml.safe_load(f)
 
@@ -157,4 +159,12 @@ def load_unified_config(
         precision=precision,
     )
 
-    return targets, rebalance_config, output_config, cash_config
+    # --- german_tax → GermanTaxConfig ---
+    gt_raw = data.get("german_tax", {})
+    german_tax_config = GermanTaxConfig(
+        enabled=gt_raw.get("enabled", False),
+        filing_status=gt_raw.get("filing_status", "single"),
+        kirchensteuer=gt_raw.get("kirchensteuer", False),
+    )
+
+    return targets, rebalance_config, output_config, cash_config, german_tax_config

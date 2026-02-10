@@ -28,6 +28,7 @@ class Position(BaseModel):
 class TickerMapping(BaseModel):
     asset_class: str
     similar_tickers: list[str] = []
+    domicile: str = "US"
 
 
 class AllocationTarget(BaseModel):
@@ -89,6 +90,29 @@ class CashConfig(BaseModel):
     external_cash_eur: Decimal = Decimal("0")
     external_cash_usd: Decimal = Decimal("0")
     eurusd_fx: Decimal = Decimal("1.10")
+
+
+class GermanFundCategory(str, Enum):
+    AKTIENFONDS = "aktienfonds"
+    MISCHFONDS = "mischfonds"
+    IMMOBILIENFONDS = "immobilienfonds"
+    OTHER = "other"
+
+
+class GermanTaxAnnotation(BaseModel):
+    ticker: str
+    fund_category: GermanFundCategory
+    teilfreistellung_pct: Decimal
+    is_accumulating: bool = False
+    pfic_risk: bool = False
+    domicile: str = "US"
+    notes: list[str] = []
+
+
+class GermanTaxConfig(BaseModel):
+    enabled: bool = False
+    filing_status: str = "single"
+    kirchensteuer: bool = False
 
 
 class RebalanceConfig(BaseModel):

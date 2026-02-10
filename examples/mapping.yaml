@@ -2,95 +2,119 @@
 VTI:
   asset_class: us_equity
   similar: [ITOT, SCHB, SPTM]
+  domicile: US
 ITOT:
   asset_class: us_equity
   similar: [VTI, SCHB, SPTM]
+  domicile: US
 
 # US Stocks — Large Cap / S&P 500
 FXAIX:
   asset_class: us_equity
   similar: [VOO, SPY, IVV]
+  domicile: US
 IVV:
   asset_class: us_equity
   similar: [VOO, SPY, FXAIX]
+  domicile: US
 
 # US Stocks — Mid Cap
 VO:
   asset_class: us_equity
   similar: [IJH, SCHM]
+  domicile: US
 
 # US Stocks — Small Cap / Value
 AVUV:
   asset_class: us_equity
   similar: [VBR, IJS, SLYV]
+  domicile: US
 VB:
   asset_class: us_equity
   similar: [IJR, SCHA]
+  domicile: US
 
 # International Stocks — Developed
 VXUS:
   asset_class: intl_equity
   similar: [IXUS, SCHF]
+  domicile: US
 VGK:
   asset_class: intl_equity
   similar: [EFA, IEFA, FEZ]
+  domicile: US
 VEA:
   asset_class: intl_equity
   similar: [IEFA, EFA, SCHF]
+  domicile: US
 IEFA:
   asset_class: intl_equity
   similar: [VEA, EFA, SCHF]
+  domicile: US
 
 # International Stocks — Small Cap
 VSS:
   asset_class: intl_equity
   similar: [SCHC, GWX]
+  domicile: US
 
 # International Stocks — Emerging Markets
 IEMG:
   asset_class: intl_equity
   similar: [VWO, EEM, SCHE]
+  domicile: US
 VWO:
   asset_class: intl_equity
   similar: [IEMG, EEM, SCHE]
+  domicile: US
 
 # REITs
 VNQ:
   asset_class: reit
   similar: [SCHH, IYR, XLRE]
+  domicile: US
 VNQI:
   asset_class: reit
   similar: [IFGL, RWX, HAUZ]
+  domicile: US
 
 # Bonds — Aggregate / Total
 BND:
   asset_class: bonds
   similar: [AGG, SCHZ]
+  domicile: US
 
 # Bonds — Short-Term Corporate
 VCSH:
   asset_class: bonds
   similar: [IGSB, SPSB]
+  domicile: US
 
 # Bonds — Short-Term Government
 BSV:
   asset_class: bonds
   similar: [VGSH, SHY, SCHO]
+  domicile: US
 
 # Bonds — Intermediate-Term Treasury
 VGIT:
   asset_class: bonds
   similar: [IEF, SCHR]
+  domicile: US
 
 # Bonds — International Treasury
 IGOV:
   asset_class: bonds
   similar: [BWX, IAGG]
+  domicile: US
 
 # Cash / Money Market
 SPAXX:
   asset_class: cash
+  domicile: US
 FDRXX:
   asset_class: cash
+  domicile: US
 FCASH:
   asset_class: cash
+  domicile: US

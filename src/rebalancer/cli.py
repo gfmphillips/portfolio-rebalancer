@@ -57,6 +57,7 @@ def run(
     mapping: str = typer.Option(..., help="Path to ticker mapping YAML"),
     config: str = typer.Option(..., help="Path to config YAML (unified or legacy)"),
     output: str = typer.Option(None, help="Path to write markdown report"),
+    german_tax: bool = typer.Option(False, "--german-tax", help="Show German tax advisory annotations"),
 ):
     """Run portfolio rebalancing and show trade recommendations."""
     from .config import (
@@ -67,9 +68,11 @@ def run(
         load_unified_config,
     )
     from .engine import rebalance
-    from .models import OutputConfig
+    from .german_tax import annotate_trades
+    from .models import GermanTaxConfig, OutputConfig
     from .output import (
         filter_actionable_trades,
+        print_german_tax_section,
         print_rebalance_report,
         sort_trades,
         write_markdown_report,
@@ -85,8 +88,9 @@ def run(
 
     # Auto-detect unified vs legacy config format
     output_config = OutputConfig()
+    german_tax_config = GermanTaxConfig()
     if is_unified_config(cfg_path):
-        targets_data, config_data, output_config, _cash_config = _safe_load(
+        targets_data, config_data, output_config, _cash_config, german_tax_config = _safe_load(
             "unified config YAML", load_unified_config, cfg_path
         )
     else:
@@ -100,6 +104,10 @@ def run(
         targets_data = _safe_load("targets YAML", load_targets, tgt_path)
         config_data = _safe_load("config YAML", load_config, cfg_path)
 
+    # CLI flag overrides config file
+    if german_tax:
+        german_tax_config.enabled = True
+
     result = rebalance(positions_list, targets_data, mapping_data, config_data)
 
     # Apply sorting and filtering
@@ -109,6 +117,11 @@ def run(
     )
 
     print_rebalance_report(result, output_config)
+
+    # German tax advisory section
+    if german_tax_config.enabled:
+        annotations = annotate_trades(result.trades, mapping_data, german_tax_config)
+        print_german_tax_section(annotations, german_tax_config)
 
     if output:
         write_markdown_report(result, Path(output), output_config)

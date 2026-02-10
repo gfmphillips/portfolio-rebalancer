@@ -11,10 +11,12 @@ import yaml
 from rebalancer.config import load_mapping, load_unified_config
 from rebalancer.engine import rebalance
 from rebalancer.fx import BankCashAccount, convert_bank_cash_to_positions, fetch_fx_rate
+from rebalancer.german_tax import annotate_trades, generate_summary
 from rebalancer.models import (
     AccountType,
     AllocationTarget,
     CashConfig,
+    GermanTaxConfig,
     OutputConfig,
     PrecisionConfig,
     RebalanceConfig,
@@ -246,8 +248,22 @@ currency_precision = st.sidebar.radio(
     key="currency_precision",
 )
 
-# --- 8. Account Types ---
-with st.sidebar.expander("8. Account Types"):
+# --- 8. German Tax ---
+st.sidebar.header("8. German Tax")
+german_tax_enabled = st.sidebar.toggle(
+    "Show German tax annotations", value=False, key="german_tax_enabled"
+)
+german_tax_filing = "single"
+if german_tax_enabled:
+    german_tax_filing = st.sidebar.selectbox(
+        "Filing status",
+        options=["single", "married"],
+        index=0,
+        key="german_tax_filing",
+    )
+
+# --- 9. Account Types ---
+with st.sidebar.expander("9. Account Types"):
     acct_mapping_text = ""
     for substr, acct_type in DEFAULT_ACCOUNT_MAPPINGS.items():
         acct_mapping_text += f"{substr}: {acct_type}\n"
@@ -258,8 +274,8 @@ with st.sidebar.expander("8. Account Types"):
         key="acct_mapping_input",
     )
 
-# --- 9. Advanced ---
-with st.sidebar.expander("9. Advanced"):
+# --- 10. Advanced ---
+with st.sidebar.expander("10. Advanced"):
     st.caption("Raw unified config YAML (read-only view / apply override)")
 
     # Build current config from widgets
@@ -744,6 +760,47 @@ with tab_trades:
                 st.subheader("Warnings")
                 for w in result.warnings:
                     st.warning(w)
+
+            # German Tax Annotations
+            if german_tax_enabled:
+                gt_config = GermanTaxConfig(
+                    enabled=True,
+                    filing_status=german_tax_filing,
+                )
+                gt_annotations = annotate_trades(result.trades, mapping, gt_config)
+                st.divider()
+                st.subheader("German Tax Advisory (InvStG)")
+                if not gt_annotations:
+                    st.info("No taxable trades -- German tax annotations not applicable.")
+                else:
+                    # PFIC warnings
+                    pfic_annotations = [a for a in gt_annotations if a.pfic_risk]
+                    for a in pfic_annotations:
+                        st.warning(
+                            f"PFIC risk: **{a.ticker}** is domiciled in {a.domicile}. "
+                            "Non-US funds may trigger punitive IRS PFIC taxation."
+                        )
+
+                    # Teilfreistellung table
+                    gt_rows = []
+                    for a in gt_annotations:
+                        gt_rows.append({
+                            "Ticker": a.ticker,
+                            "Category": a.fund_category.value,
+                            "Teilfreistellung": f"{a.teilfreistellung_pct}%",
+                            "PFIC Risk": "YES" if a.pfic_risk else "No",
+                            "Domicile": a.domicile,
+                            "Notes": "; ".join(a.notes),
+                        })
+                    st.dataframe(gt_rows, width="stretch", hide_index=True)
+
+                    # Sparerpauschbetrag summary
+                    summary = generate_summary(gt_annotations, german_tax_filing)
+                    sparer = summary["sparerpauschbetrag_eur"]
+                    st.caption(
+                        f"Sparerpauschbetrag: EUR {sparer:,} ({german_tax_filing}). "
+                        f"First EUR {sparer:,} of investment income is tax-free."
+                    )
 
             # Download markdown report
             st.divider()

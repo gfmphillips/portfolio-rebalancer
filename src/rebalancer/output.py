@@ -6,7 +6,16 @@ from rich.table import Table
 
 from collections import OrderedDict
 
-from .models import OutputConfig, Position, RebalanceResult, SortKey, TickerMapping, Trade
+from .models import (
+    GermanTaxAnnotation,
+    GermanTaxConfig,
+    OutputConfig,
+    Position,
+    RebalanceResult,
+    SortKey,
+    TickerMapping,
+    Trade,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -403,3 +412,93 @@ def write_markdown_report(
     lines.append("")
     path.write_text("\n".join(lines))
     console.print(f"\n[dim]Report written to {path}[/dim]")
+
+
+def print_german_tax_section(
+    annotations: list[GermanTaxAnnotation],
+    config: GermanTaxConfig,
+) -> None:
+    """Print German tax advisory annotations as a Rich table."""
+    if not annotations:
+        console.print("\n[dim]No taxable trades -- German tax annotations not applicable.[/dim]")
+        return
+
+    from .german_tax import generate_summary
+
+    console.print()
+    console.print("[bold]German Tax Advisory (InvStG)[/bold]")
+
+    table = Table(title="Teilfreistellung & PFIC Analysis")
+    table.add_column("Ticker", style="bold")
+    table.add_column("Category")
+    table.add_column("Teilfreistellung", justify="right")
+    table.add_column("PFIC Risk", justify="center")
+    table.add_column("Domicile", justify="center")
+    table.add_column("Notes")
+
+    for a in annotations:
+        pfic_str = "[red]YES[/red]" if a.pfic_risk else "[green]No[/green]"
+        table.add_row(
+            a.ticker,
+            a.fund_category.value,
+            f"{a.teilfreistellung_pct}%",
+            pfic_str,
+            a.domicile,
+            "; ".join(a.notes),
+        )
+
+    console.print(table)
+
+    summary = generate_summary(annotations, config.filing_status)
+    sparer = summary["sparerpauschbetrag_eur"]
+    console.print(
+        f"\n[dim]Sparerpauschbetrag: EUR {sparer:,} "
+        f"({config.filing_status}). "
+        f"First EUR {sparer:,} of investment income is tax-free.[/dim]"
+    )
+    if summary["pfic_risk_count"] > 0:
+        console.print(
+            f"[yellow]Warning: {summary['pfic_risk_count']} position(s) "
+            f"with PFIC risk. Consult your tax advisor.[/yellow]"
+        )
+
+
+def write_german_tax_markdown(
+    annotations: list[GermanTaxAnnotation],
+    config: GermanTaxConfig,
+) -> list[str]:
+    """Return markdown lines for the German tax advisory section."""
+    lines: list[str] = []
+
+    if not annotations:
+        lines.append("\n## German Tax Advisory\n")
+        lines.append("No taxable trades -- German tax annotations not applicable.\n")
+        return lines
+
+    from .german_tax import generate_summary
+
+    lines.append("\n## German Tax Advisory (InvStG)\n")
+    lines.append("| Ticker | Category | Teilfreistellung | PFIC Risk | Domicile | Notes |")
+    lines.append("|---|---|---:|:---:|:---:|---|")
+
+    for a in annotations:
+        pfic_str = "YES" if a.pfic_risk else "No"
+        notes_str = "; ".join(a.notes)
+        lines.append(
+            f"| {a.ticker} | {a.fund_category.value} | {a.teilfreistellung_pct}% "
+            f"| {pfic_str} | {a.domicile} | {notes_str} |"
+        )
+
+    summary = generate_summary(annotations, config.filing_status)
+    sparer = summary["sparerpauschbetrag_eur"]
+    lines.append(
+        f"\n**Sparerpauschbetrag:** EUR {sparer:,} ({config.filing_status}). "
+        f"First EUR {sparer:,} of investment income is tax-free."
+    )
+    if summary["pfic_risk_count"] > 0:
+        lines.append(
+            f"\n**Warning:** {summary['pfic_risk_count']} position(s) with PFIC risk. "
+            "Consult your tax advisor."
+        )
+
+    return lines

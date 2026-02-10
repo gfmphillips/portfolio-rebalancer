@@ -33,3 +33,8 @@ output:
   precision:
     currency: 0
     pct: 2
+
+german_tax:
+  enabled: false
+  filing_status: single    # single or married
+  kirchensteuer: false

@@ -56,7 +56,7 @@ class TestIsUnifiedConfig:
 
 class TestLoadUnifiedConfig:
     def test_parses_all_sections(self, unified_config_path):
-        targets, config, output_config, cash_config = load_unified_config(unified_config_path)
+        targets, config, output_config, cash_config, _gt = load_unified_config(unified_config_path)
 
         assert len(targets) == 5
         assert config.threshold_pct == Decimal("5.0")
@@ -72,7 +72,7 @@ class TestLoadUnifiedConfig:
             load_unified_config(path)
 
     def test_tax_enabled_false(self, unified_config_path):
-        targets, config, _, _ = load_unified_config(unified_config_path)
+        targets, config, _, _, _ = load_unified_config(unified_config_path)
         assert config.tlh_enabled is False
         assert config.avoid_gains_in_taxable is False
 
@@ -83,12 +83,12 @@ class TestLoadUnifiedConfig:
         }
         path = tmp_path / "tax_on.yaml"
         path.write_text(yaml.dump(data))
-        _, config, _, _ = load_unified_config(path)
+        _, config, _, _, _ = load_unified_config(path)
         assert config.tlh_enabled is True
         assert config.avoid_gains_in_taxable is True
 
     def test_account_mappings_parsed(self, unified_config_path):
-        _, config, _, _ = load_unified_config(unified_config_path)
+        _, config, _, _, _ = load_unified_config(unified_config_path)
         assert config.account_mappings["Individual"] == AccountType.TAXABLE
         assert config.account_mappings["ROTH"] == AccountType.ROTH_IRA
         assert config.account_mappings["401(K)"] == AccountType.FOUR_01K
@@ -107,7 +107,7 @@ class TestLoadUnifiedConfig:
         data = {"allocation": {"us_equity": 60, "bonds": 40}}
         path = tmp_path / "minimal.yaml"
         path.write_text(yaml.dump(data))
-        targets, config, output_config, cash_config = load_unified_config(path)
+        targets, config, output_config, cash_config, _gt = load_unified_config(path)
 
         assert len(targets) == 2
         assert config.tlh_enabled is False
@@ -119,7 +119,7 @@ class TestLoadUnifiedConfig:
         assert output_config.precision.pct == 2
 
     def test_output_sort_order_parsed(self, unified_config_path):
-        _, _, output_config, _ = load_unified_config(unified_config_path)
+        _, _, output_config, _, _ = load_unified_config(unified_config_path)
         assert output_config.sort_order == [SortKey.SELLS_FIRST, SortKey.LARGEST_TRADE_FIRST]
 
     def test_example_unified_config(self, examples_dir):
@@ -127,7 +127,7 @@ class TestLoadUnifiedConfig:
         path = examples_dir / "unified_config.yaml"
         if not path.exists():
             pytest.skip("unified_config.yaml not in examples/")
-        targets, config, output_config, cash_config = load_unified_config(path)
+        targets, config, output_config, cash_config, _gt = load_unified_config(path)
         assert len(targets) == 5
         total = sum(t.target_pct for t in targets)
         assert total == Decimal("100")
@@ -142,7 +142,7 @@ class TestEndToEndUnifiedConfig:
 
         positions = parse_fidelity_csv(examples_dir / "fidelity_positions.csv")
         mapping = load_mapping(examples_dir / "mapping.yaml")
-        targets, config, output_config, cash_config = load_unified_config(
+        targets, config, output_config, cash_config, _gt = load_unified_config(
             examples_dir / "unified_config.yaml"
         )
 
