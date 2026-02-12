@@ -14,6 +14,12 @@ class AccountType(str, Enum):
     HSA = "hsa"
 
 
+class TaxLot(BaseModel):
+    acquisition_date: str  # YYYY-MM-DD
+    shares: Decimal
+    cost_basis_per_share: Decimal
+
+
 class Position(BaseModel):
     account_name: str
     account_type: AccountType
@@ -23,12 +29,17 @@ class Position(BaseModel):
     price: Decimal
     market_value: Decimal
     cost_basis_total: Decimal | None = None
+    tax_lots: list[TaxLot] = []
 
 
 class TickerMapping(BaseModel):
     asset_class: str
     similar_tickers: list[str] = []
     domicile: str = "US"
+    preferred: bool = False
+    consolidate_to: str | None = None
+    german_fund_category: str | None = None  # "aktienfonds", "mischfonds", etc.
+    is_accumulating: bool | None = None  # None = unknown
 
 
 class AllocationTarget(BaseModel):
@@ -46,6 +57,7 @@ class Trade(BaseModel):
     reasoning: str
     warnings: list[str] = []
     estimated_gain_loss: Decimal | None = None  # positive = gain, negative = loss
+    lot_acquisition_date: str | None = None
 
 
 class TaxImpact(BaseModel):
@@ -53,6 +65,24 @@ class TaxImpact(BaseModel):
     estimated_total_losses: Decimal = Decimal("0")
     estimated_net: Decimal = Decimal("0")
     taxable_trades_count: int = 0
+
+
+class ConstraintCheck(BaseModel):
+    name: str
+    required: Decimal
+    actual: Decimal
+    met: bool
+    message: str
+
+
+class ConstraintsConfig(BaseModel):
+    min_taxable_bonds_usd: Decimal | None = None
+
+
+class RunMetadata(BaseModel):
+    timestamp: str  # ISO 8601
+    eurusd_fx_used: Decimal
+    tool_version: str
 
 
 class RebalanceResult(BaseModel):
@@ -63,6 +93,8 @@ class RebalanceResult(BaseModel):
     trades: list[Trade]
     warnings: list[str]
     tax_impact: TaxImpact = TaxImpact()
+    constraints: list[ConstraintCheck] = []
+    metadata: RunMetadata | None = None
 
 
 class PrecisionConfig(BaseModel):
@@ -85,11 +117,19 @@ class OutputConfig(BaseModel):
     precision: PrecisionConfig = PrecisionConfig()
 
 
+class CashCategory(BaseModel):
+    eur: Decimal = Decimal("0")
+    usd: Decimal = Decimal("0")
+
+
 class CashConfig(BaseModel):
+    eurusd_fx: Decimal = Decimal("1.10")
+    investable: CashCategory = CashCategory()
+    emergency: CashCategory = CashCategory()
+    # Legacy fields (deprecated, mapped to investable/emergency on load)
     include_in_portfolio: bool = True
     external_cash_eur: Decimal = Decimal("0")
     external_cash_usd: Decimal = Decimal("0")
-    eurusd_fx: Decimal = Decimal("1.10")
 
 
 class GermanFundCategory(str, Enum):
@@ -115,10 +155,38 @@ class GermanTaxConfig(BaseModel):
     kirchensteuer: bool = False
 
 
+class Transaction(BaseModel):
+    date: str  # YYYY-MM-DD
+    account_name: str
+    ticker: str
+    action: Literal["BUY", "SELL"]
+    shares: Decimal
+
+
 class RebalanceConfig(BaseModel):
     threshold_pct: Decimal = Decimal("3.0")
+    threshold_relative_pct: Decimal = Decimal("20")
     min_trade_value: Decimal = Decimal("50")
     tlh_enabled: bool = True
     avoid_gains_in_taxable: bool = True
     cash_to_invest: Decimal = Decimal("0")
     account_mappings: dict[str, AccountType] = {}
+
+
+class ConsolidationOpportunity(BaseModel):
+    ticker: str
+    account_name: str
+    account_type: AccountType
+    market_value: Decimal
+    consolidate_to: str
+    safe_to_consolidate: bool
+    estimated_gain_loss: Decimal | None = None
+    reason: str
+
+
+class ConsolidationAnalysis(BaseModel):
+    end_state_value: Decimal
+    legacy_value: Decimal
+    end_state_pct: Decimal
+    legacy_pct: Decimal
+    opportunities: list[ConsolidationOpportunity]

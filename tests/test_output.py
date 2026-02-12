@@ -2,8 +2,8 @@ from decimal import Decimal
 
 import pytest
 
-from rebalancer.models import AccountType, SortKey, Trade
-from rebalancer.output import _format_currency, _format_pct, filter_actionable_trades, sort_trades
+from rebalancer.models import AccountType, RebalanceResult, SortKey, TaxImpact, Trade
+from rebalancer.output import _format_currency, _format_pct, filter_actionable_trades, sort_trades, write_markdown_report
 
 
 def _make_trade(action="BUY", ticker="VTI", value=1000, account="Acct1"):
@@ -147,3 +147,87 @@ class TestFilterActionableTrades:
     def test_empty_trades(self):
         result = filter_actionable_trades([], Decimal("500"), show_only=True)
         assert result == []
+
+
+class TestLotInfoInOutput:
+    def _make_lot_trade(self, lot_date=None, gain_loss=None):
+        return Trade(
+            account_name="Taxable",
+            account_type=AccountType.TAXABLE,
+            ticker="VTI",
+            action="SELL",
+            shares=Decimal("10"),
+            estimated_value=Decimal("2500"),
+            reasoning=f"Reduce overweight us_equity (lot: {lot_date}, HIFO)" if lot_date else "Reduce overweight us_equity",
+            estimated_gain_loss=gain_loss,
+            lot_acquisition_date=lot_date,
+        )
+
+    def test_lot_specific_label_in_markdown(self, tmp_path):
+        trade = self._make_lot_trade("2020-03-15", Decimal("500"))
+        result = RebalanceResult(
+            total_portfolio_value=Decimal("100000"),
+            current_allocation={"us_equity": Decimal("70")},
+            target_allocation={"us_equity": Decimal("60")},
+            drift={"us_equity": Decimal("10")},
+            trades=[trade],
+            warnings=[],
+            tax_impact=TaxImpact(
+                estimated_total_gains=Decimal("500"),
+                estimated_total_losses=Decimal("0"),
+                estimated_net=Decimal("500"),
+                taxable_trades_count=1,
+            ),
+        )
+        path = tmp_path / "report.md"
+        write_markdown_report(result, path)
+        content = path.read_text()
+        assert "(lot-specific)" in content
+        assert "(approximate)" not in content
+
+    def test_approximate_label_when_no_lots(self, tmp_path):
+        trade = self._make_lot_trade(None, Decimal("500"))
+        result = RebalanceResult(
+            total_portfolio_value=Decimal("100000"),
+            current_allocation={"us_equity": Decimal("70")},
+            target_allocation={"us_equity": Decimal("60")},
+            drift={"us_equity": Decimal("10")},
+            trades=[trade],
+            warnings=[],
+            tax_impact=TaxImpact(
+                estimated_total_gains=Decimal("500"),
+                estimated_total_losses=Decimal("0"),
+                estimated_net=Decimal("500"),
+                taxable_trades_count=1,
+            ),
+        )
+        path = tmp_path / "report.md"
+        write_markdown_report(result, path)
+        content = path.read_text()
+        assert "(approximate)" in content
+
+    def test_mixed_label(self, tmp_path):
+        lot_trade = self._make_lot_trade("2020-03-15", Decimal("500"))
+        blended_trade = self._make_lot_trade(None, Decimal("200"))
+        result = RebalanceResult(
+            total_portfolio_value=Decimal("100000"),
+            current_allocation={"us_equity": Decimal("70")},
+            target_allocation={"us_equity": Decimal("60")},
+            drift={"us_equity": Decimal("10")},
+            trades=[lot_trade, blended_trade],
+            warnings=[],
+            tax_impact=TaxImpact(
+                estimated_total_gains=Decimal("700"),
+                estimated_total_losses=Decimal("0"),
+                estimated_net=Decimal("700"),
+                taxable_trades_count=2,
+            ),
+        )
+        path = tmp_path / "report.md"
+        write_markdown_report(result, path)
+        content = path.read_text()
+        assert "mixed" in content
+
+    def test_lot_date_in_reasoning(self):
+        trade = self._make_lot_trade("2020-03-15", Decimal("500"))
+        assert "lot: 2020-03-15" in trade.reasoning

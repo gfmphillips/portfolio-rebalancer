@@ -1,72 +1,88 @@
-# US Stocks — Total Market
+# US Stocks — Total Market (end-state)
 VTI:
   asset_class: us_equity
   similar: [ITOT, SCHB, SPTM]
   domicile: US
+  preferred: true
 ITOT:
   asset_class: us_equity
   similar: [VTI, SCHB, SPTM]
   domicile: US
+  preferred: true
 
-# US Stocks — Large Cap / S&P 500
+# US Stocks — Large Cap / S&P 500 (legacy → VTI)
 FXAIX:
   asset_class: us_equity
   similar: [VOO, SPY, IVV]
   domicile: US
+  consolidate_to: VTI
 IVV:
   asset_class: us_equity
   similar: [VOO, SPY, FXAIX]
   domicile: US
+  consolidate_to: VTI
 
-# US Stocks — Mid Cap
+# US Stocks — Mid Cap (legacy → VTI)
 VO:
   asset_class: us_equity
   similar: [IJH, SCHM]
   domicile: US
+  consolidate_to: VTI
 
-# US Stocks — Small Cap / Value
+# US Stocks — Small Cap / Value (legacy → VTI)
 AVUV:
   asset_class: us_equity
   similar: [VBR, IJS, SLYV]
   domicile: US
+  consolidate_to: VTI
 VB:
   asset_class: us_equity
   similar: [IJR, SCHA]
   domicile: US
+  consolidate_to: VTI
 
-# International Stocks — Developed
+# International Stocks — Total (end-state)
 VXUS:
   asset_class: intl_equity
   similar: [IXUS, SCHF]
   domicile: US
+  preferred: true
+
+# International Stocks — Developed (legacy → VXUS)
 VGK:
   asset_class: intl_equity
   similar: [EFA, IEFA, FEZ]
   domicile: US
+  consolidate_to: VXUS
 VEA:
   asset_class: intl_equity
   similar: [IEFA, EFA, SCHF]
   domicile: US
+  consolidate_to: VXUS
 IEFA:
   asset_class: intl_equity
   similar: [VEA, EFA, SCHF]
   domicile: US
+  consolidate_to: VXUS
 
-# International Stocks — Small Cap
+# International Stocks — Small Cap (legacy → VXUS)
 VSS:
   asset_class: intl_equity
   similar: [SCHC, GWX]
   domicile: US
+  consolidate_to: VXUS
 
-# International Stocks — Emerging Markets
+# International Stocks — Emerging Markets (legacy → VXUS)
 IEMG:
   asset_class: intl_equity
   similar: [VWO, EEM, SCHE]
   domicile: US
+  consolidate_to: VXUS
 VWO:
   asset_class: intl_equity
   similar: [IEMG, EEM, SCHE]
   domicile: US
+  consolidate_to: VXUS
 
 # REITs
 VNQ:
@@ -78,35 +94,40 @@ VNQI:
   similar: [IFGL, RWX, HAUZ]
   domicile: US
 
-# Bonds — Aggregate / Total
+# Bonds — Total (end-state)
 BND:
   asset_class: bonds
   similar: [AGG, SCHZ]
   domicile: US
+  preferred: true
 
-# Bonds — Short-Term Corporate
+# Bonds — Short-Term Corporate (legacy → BND)
 VCSH:
   asset_class: bonds
   similar: [IGSB, SPSB]
   domicile: US
+  consolidate_to: BND
 
-# Bonds — Short-Term Government
+# Bonds — Short-Term Government (legacy → BND)
 BSV:
   asset_class: bonds
   similar: [VGSH, SHY, SCHO]
   domicile: US
+  consolidate_to: BND
 
-# Bonds — Intermediate-Term Treasury
+# Bonds — Intermediate-Term Treasury (legacy → BND)
 VGIT:
   asset_class: bonds
   similar: [IEF, SCHR]
   domicile: US
+  consolidate_to: BND
 
-# Bonds — International Treasury
+# Bonds — International Treasury (legacy → BND)
 IGOV:
   asset_class: bonds
   similar: [BWX, IAGG]
   domicile: US
+  consolidate_to: BND
 
 # Cash / Money Market
 SPAXX:

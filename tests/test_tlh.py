@@ -10,6 +10,7 @@ from rebalancer.models import (
     RebalanceConfig,
     TickerMapping,
     Trade,
+    Transaction,
 )
 from rebalancer.tlh import (
     check_wash_sales,
@@ -163,7 +164,9 @@ class TestCheckWashSales:
             ),
         ]
         warnings = check_wash_sales(trades, mapping_with_similar)
-        assert len(warnings) == 0
+        # No wash sale from proposed trades, but INCOMPLETE warning since no transactions provided
+        assert not any("WASH SALE RISK" in w for w in warnings)
+        assert any("INCOMPLETE" in w for w in warnings)
 
     def test_wash_sale_same_ticker(self, mapping_with_similar):
         trades = [
@@ -269,6 +272,160 @@ class TestCheckWashSales:
         assert len(warnings) >= 1
 
 
+class TestWashSalesWithTransactions:
+    def test_no_warning_when_transactions_provided_no_conflict(self, mapping_with_similar):
+        """No wash sale when recent transactions don't overlap."""
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        transactions = [
+            Transaction(
+                date="2024-12-15",
+                account_name="Roth",
+                ticker="BND",
+                action="BUY",
+                shares=Decimal("20"),
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, transactions)
+        assert not any("WASH SALE" in w for w in warnings)
+
+    def test_warns_on_recent_buy_same_ticker(self, mapping_with_similar):
+        """Recent buy of same ticker triggers wash sale warning."""
+        from datetime import date, timedelta
+        recent_date = (date.today() - timedelta(days=10)).strftime("%Y-%m-%d")
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        transactions = [
+            Transaction(
+                date=recent_date,
+                account_name="ROTH IRA",
+                ticker="VTI",
+                action="BUY",
+                shares=Decimal("5"),
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, transactions)
+        assert any("recent history" in w.lower() for w in warnings)
+
+    def test_warns_on_recent_buy_similar_ticker(self, mapping_with_similar):
+        """Recent buy of similar ticker triggers wash sale warning."""
+        from datetime import date, timedelta
+        recent_date = (date.today() - timedelta(days=5)).strftime("%Y-%m-%d")
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        transactions = [
+            Transaction(
+                date=recent_date,
+                account_name="401k",
+                ticker="ITOT",
+                action="BUY",
+                shares=Decimal("5"),
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, transactions)
+        assert any("recent history" in w.lower() for w in warnings)
+
+    def test_no_warning_for_old_transaction(self, mapping_with_similar):
+        """Transactions older than 30 days don't trigger warnings."""
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        transactions = [
+            Transaction(
+                date="2024-01-01",  # Well over 30 days ago
+                account_name="ROTH IRA",
+                ticker="VTI",
+                action="BUY",
+                shares=Decimal("5"),
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, transactions)
+        assert not any("recent history" in w.lower() for w in warnings)
+
+    def test_incomplete_warning_without_transactions(self, mapping_with_similar):
+        """When TLH trades exist but no transactions provided, warn about incomplete check."""
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, None)
+        assert any("INCOMPLETE" in w for w in warnings)
+
+    def test_no_incomplete_warning_with_transactions(self, mapping_with_similar):
+        """When transactions are provided, no INCOMPLETE warning."""
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="TLH opportunity",
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, [])
+        assert not any("INCOMPLETE" in w for w in warnings)
+
+    def test_no_incomplete_warning_for_non_tlh_sells(self, mapping_with_similar):
+        """No INCOMPLETE warning when sells aren't TLH-related."""
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                action="SELL",
+                shares=Decimal("10"),
+                estimated_value=Decimal("1000"),
+                reasoning="Reduce overweight us_equity",
+            ),
+        ]
+        warnings = check_wash_sales(trades, mapping_with_similar, None)
+        assert not any("INCOMPLETE" in w for w in warnings)
+
+
 class TestSuggestTLHReplacements:
     def test_suggests_non_similar_same_class(self, mapping_with_similar):
         held = {"VTI", "VXUS", "BND", "SPAXX"}
@@ -342,7 +499,7 @@ class TestEndToEnd:
 
         positions = parse_fidelity_csv(examples_dir / "fidelity_positions.csv")
         mapping = load_mapping(examples_dir / "mapping.yaml")
-        targets, config, output_config, cash_config, _gt = load_unified_config(
+        targets, config, output_config, cash_config, _gt, _cst = load_unified_config(
             examples_dir / "unified_config.yaml"
         )
 

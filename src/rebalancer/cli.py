@@ -58,6 +58,8 @@ def run(
     config: str = typer.Option(..., help="Path to config YAML (unified or legacy)"),
     output: str = typer.Option(None, help="Path to write markdown report"),
     german_tax: bool = typer.Option(False, "--german-tax", help="Show German tax advisory annotations"),
+    transactions: str = typer.Option(None, help="Path to transaction history CSV (for wash sale detection)"),
+    lots: str = typer.Option(None, help="Path to tax lot CSV (for lot-aware selling)"),
 ):
     """Run portfolio rebalancing and show trade recommendations."""
     from .config import (
@@ -67,32 +69,53 @@ def run(
         load_targets,
         load_unified_config,
     )
-    from .engine import rebalance
+    from .engine import analyze_consolidation, build_run_metadata, rebalance
     from .german_tax import annotate_trades
     from .models import GermanTaxConfig, OutputConfig
     from .output import (
         filter_actionable_trades,
+        print_consolidation_report,
         print_german_tax_section,
         print_rebalance_report,
         sort_trades,
         write_markdown_report,
     )
-    from .parser import parse_fidelity_csv
+    from .parser import attach_lots, parse_fidelity_csv, parse_lots, parse_transactions
 
     pos_path = _validate_file(positions, "Positions CSV")
     map_path = _validate_file(mapping, "Mapping YAML")
     cfg_path = _validate_file(config, "Config YAML")
 
+    # Load transaction history if provided
+    recent_transactions = None
+    if transactions is not None:
+        txn_path = _validate_file(transactions, "Transactions CSV")
+        recent_transactions = _safe_load("transactions CSV", parse_transactions, txn_path)
+
     positions_list = _safe_load("positions CSV", parse_fidelity_csv, pos_path)
     mapping_data = _safe_load("mapping YAML", load_mapping, map_path)
 
+    # Parse and attach tax lots if provided
+    lot_warnings: list[str] = []
+    if lots is not None:
+        lot_path = _validate_file(lots, "Tax lot CSV")
+        lots_data = _safe_load("tax lot CSV", parse_lots, lot_path)
+        lot_warnings = attach_lots(positions_list, lots_data)
+
     # Auto-detect unified vs legacy config format
+    from decimal import Decimal
+
     output_config = OutputConfig()
     german_tax_config = GermanTaxConfig()
+    from .models import ConstraintsConfig
+
+    cash_config_fx = Decimal("1.10")
+    constraints_config = ConstraintsConfig()
     if is_unified_config(cfg_path):
-        targets_data, config_data, output_config, _cash_config, german_tax_config = _safe_load(
+        targets_data, config_data, output_config, cash_config, german_tax_config, constraints_config = _safe_load(
             "unified config YAML", load_unified_config, cfg_path
         )
+        cash_config_fx = cash_config.eurusd_fx
     else:
         # Legacy format requires --targets
         if targets is None:
@@ -108,7 +131,16 @@ def run(
     if german_tax:
         german_tax_config.enabled = True
 
-    result = rebalance(positions_list, targets_data, mapping_data, config_data)
+    metadata = build_run_metadata(eurusd_fx=cash_config_fx)
+    result = rebalance(
+        positions_list, targets_data, mapping_data, config_data,
+        metadata=metadata, constraints=constraints_config,
+        recent_transactions=recent_transactions,
+    )
+
+    # Add lot warnings to result
+    for w in lot_warnings:
+        result.warnings.append(w)
 
     # Apply sorting and filtering
     result.trades = sort_trades(result.trades, output_config.sort_order)
@@ -122,6 +154,11 @@ def run(
     if german_tax_config.enabled:
         annotations = annotate_trades(result.trades, mapping_data, german_tax_config)
         print_german_tax_section(annotations, german_tax_config)
+
+    # Consolidation report
+    consolidation = analyze_consolidation(positions_list, mapping_data)
+    if consolidation.legacy_value > 0:
+        print_consolidation_report(consolidation)
 
     if output:
         write_markdown_report(result, Path(output), output_config)

@@ -7,12 +7,15 @@ from rebalancer.engine import rebalance
 from rebalancer.fx import (
     BankCashAccount,
     _clear_fx_cache,
+    build_bank_cash_positions,
     convert_bank_cash_to_positions,
     fetch_fx_rate,
 )
 from rebalancer.models import (
     AccountType,
     AllocationTarget,
+    CashCategory,
+    CashConfig,
     Position,
     RebalanceConfig,
     TickerMapping,
@@ -488,3 +491,169 @@ class TestRebalanceIgnoresBankCash:
         # Allocations should be identical since only brokerage positions are used
         assert result_clean.current_allocation == result_with_bank_mapping.current_allocation
         assert result_clean.total_portfolio_value == result_with_bank_mapping.total_portfolio_value
+
+
+# ---------------------------------------------------------------------------
+# build_bank_cash_positions
+# ---------------------------------------------------------------------------
+
+
+class TestBuildBankCashPositions:
+    def test_investable_usd(self):
+        config = CashConfig(
+            investable=CashCategory(usd=Decimal("5000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 1
+        assert positions[0].ticker == "CASH-USD"
+        assert positions[0].market_value == Decimal("5000")
+
+    def test_investable_eur(self):
+        config = CashConfig(
+            eurusd_fx=Decimal("1.10"),
+            investable=CashCategory(eur=Decimal("2000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 1
+        assert positions[0].ticker == "CASH-EUR"
+        assert positions[0].market_value == Decimal("2200.00")
+
+    def test_emergency_usd(self):
+        config = CashConfig(
+            emergency=CashCategory(usd=Decimal("10000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 1
+        assert positions[0].ticker == "CASH-USD-EMERGENCY"
+        assert positions[0].market_value == Decimal("10000")
+
+    def test_emergency_eur(self):
+        config = CashConfig(
+            eurusd_fx=Decimal("1.10"),
+            emergency=CashCategory(eur=Decimal("5000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 1
+        assert positions[0].ticker == "CASH-EUR-EMERGENCY"
+        assert positions[0].market_value == Decimal("5500.00")
+
+    def test_both_investable_and_emergency(self):
+        config = CashConfig(
+            eurusd_fx=Decimal("1.10"),
+            investable=CashCategory(usd=Decimal("1000"), eur=Decimal("2000")),
+            emergency=CashCategory(usd=Decimal("5000"), eur=Decimal("10000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 4
+        tickers = {p.ticker for p in positions}
+        assert tickers == {"CASH-USD", "CASH-EUR", "CASH-USD-EMERGENCY", "CASH-EUR-EMERGENCY"}
+
+    def test_zero_amounts_excluded(self):
+        config = CashConfig(
+            investable=CashCategory(usd=Decimal("0"), eur=Decimal("0")),
+            emergency=CashCategory(usd=Decimal("0"), eur=Decimal("0")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert len(positions) == 0
+
+    def test_emergency_descriptions_mention_excluded(self):
+        config = CashConfig(
+            emergency=CashCategory(usd=Decimal("1000")),
+        )
+        positions = build_bank_cash_positions(config)
+        assert "excluded from rebalancing" in positions[0].description
+
+
+class TestEmergencyCashExcludedFromPools:
+    def test_emergency_cash_not_in_pools(self):
+        """Emergency cash positions should not be added to cash pools."""
+        from rebalancer.engine import _build_initial_cash_pools
+
+        mapping = {
+            "SPAXX": TickerMapping(asset_class="cash"),
+            "CASH-USD": TickerMapping(asset_class="cash"),
+            "CASH-USD-EMERGENCY": TickerMapping(asset_class="cash"),
+        }
+        positions = [
+            Position(
+                account_name="Individual",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("2000"),
+                cost_basis_total=None,
+            ),
+            Position(
+                account_name="Bank (USD)",
+                account_type=AccountType.TAXABLE,
+                ticker="CASH-USD",
+                description="Investable",
+                quantity=Decimal("1000"),
+                price=Decimal("1"),
+                market_value=Decimal("1000"),
+                cost_basis_total=None,
+            ),
+            Position(
+                account_name="Bank (USD) - Emergency",
+                account_type=AccountType.TAXABLE,
+                ticker="CASH-USD-EMERGENCY",
+                description="Emergency",
+                quantity=Decimal("10000"),
+                price=Decimal("1"),
+                market_value=Decimal("10000"),
+                cost_basis_total=None,
+            ),
+        ]
+        pools = _build_initial_cash_pools(positions, mapping)
+        # Only SPAXX and CASH-USD should contribute, not CASH-USD-EMERGENCY
+        assert pools.taxable_pool == Decimal("3000")
+
+    def test_emergency_cash_in_portfolio_total(self):
+        """Emergency cash still counts toward total portfolio value."""
+        mapping = {
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+            "CASH-USD-EMERGENCY": TickerMapping(asset_class="cash"),
+        }
+        positions = [
+            Position(
+                account_name="Individual",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("100"),
+                price=Decimal("100"),
+                market_value=Decimal("10000"),
+                cost_basis_total=Decimal("8000"),
+            ),
+            Position(
+                account_name="Individual",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("500"),
+                cost_basis_total=None,
+            ),
+            Position(
+                account_name="Bank (USD) - Emergency",
+                account_type=AccountType.TAXABLE,
+                ticker="CASH-USD-EMERGENCY",
+                description="Emergency",
+                quantity=Decimal("5000"),
+                price=Decimal("1"),
+                market_value=Decimal("5000"),
+                cost_basis_total=None,
+            ),
+        ]
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("60")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("40")),
+        ]
+        config = RebalanceConfig(threshold_pct=Decimal("5"), min_trade_value=Decimal("50"))
+        result = rebalance(positions, targets, mapping, config)
+        # Total should include emergency cash
+        assert result.total_portfolio_value == Decimal("15500")

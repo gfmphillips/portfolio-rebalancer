@@ -3,10 +3,14 @@ from pathlib import Path
 
 import yaml
 
+import warnings
+
 from .models import (
     AccountType,
     AllocationTarget,
+    CashCategory,
     CashConfig,
+    ConstraintsConfig,
     GermanTaxConfig,
     OutputConfig,
     PrecisionConfig,
@@ -48,6 +52,10 @@ def load_mapping(path: Path) -> dict[str, TickerMapping]:
                 asset_class=info["asset_class"],
                 similar_tickers=info.get("similar", []),
                 domicile=info.get("domicile", "US"),
+                preferred=info.get("preferred", False),
+                consolidate_to=info.get("consolidate_to", None),
+                german_fund_category=info.get("german_fund_category", None),
+                is_accumulating=info.get("is_accumulating", None),
             )
 
     return mappings
@@ -91,7 +99,7 @@ def is_unified_config(path: Path) -> bool:
 
 def load_unified_config(
     path: Path,
-) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig, GermanTaxConfig]:
+) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig, GermanTaxConfig, ConstraintsConfig]:
     """Parse a unified config YAML and return (targets, config, output_config, cash_config, german_tax_config)."""
     with open(path) as f:
         data = yaml.safe_load(f)
@@ -110,9 +118,11 @@ def load_unified_config(
     # --- rebalance → threshold_pct, min_trade_value ---
     rebalance = data.get("rebalance", {})
 
-    # --- tax.enabled → tlh_enabled + avoid_gains_in_taxable ---
+    # --- tax → tlh_enabled + avoid_gains_in_taxable ---
     tax = data.get("tax", {})
     tax_enabled = tax.get("enabled", False)
+    tlh_enabled = tax.get("tlh_enabled", tax_enabled)
+    avoid_gains = tax.get("avoid_gains_in_taxable", tax_enabled)
 
     # --- accounts → account_mappings ---
     accounts_raw = data.get("accounts", {})
@@ -128,21 +138,62 @@ def load_unified_config(
 
     rebalance_config = RebalanceConfig(
         threshold_pct=Decimal(str(rebalance.get("threshold_pct", 5.0))),
+        threshold_relative_pct=Decimal(str(rebalance.get("threshold_relative_pct", 20))),
         min_trade_value=Decimal(str(rebalance.get("min_trade_value", 500))),
-        tlh_enabled=tax_enabled,
-        avoid_gains_in_taxable=tax_enabled,
+        tlh_enabled=tlh_enabled,
+        avoid_gains_in_taxable=avoid_gains,
         cash_to_invest=Decimal("0"),
         account_mappings=account_mappings,
     )
 
     # --- cash → CashConfig ---
     cash_raw = data.get("cash", {})
-    cash_config = CashConfig(
-        include_in_portfolio=cash_raw.get("include_in_portfolio", True),
-        external_cash_eur=Decimal(str(cash_raw.get("external_cash_eur", 0))),
-        external_cash_usd=Decimal(str(cash_raw.get("external_cash_usd", 0))),
-        eurusd_fx=Decimal(str(cash_raw.get("eurusd_fx", "1.10"))),
-    )
+    eurusd_fx = Decimal(str(cash_raw.get("eurusd_fx", "1.10")))
+
+    if "investable" in cash_raw or "emergency" in cash_raw:
+        # New format
+        inv_raw = cash_raw.get("investable", {})
+        emg_raw = cash_raw.get("emergency", {})
+        cash_config = CashConfig(
+            eurusd_fx=eurusd_fx,
+            investable=CashCategory(
+                eur=Decimal(str(inv_raw.get("eur", 0))),
+                usd=Decimal(str(inv_raw.get("usd", 0))),
+            ),
+            emergency=CashCategory(
+                eur=Decimal(str(emg_raw.get("eur", 0))),
+                usd=Decimal(str(emg_raw.get("usd", 0))),
+            ),
+        )
+    elif "external_cash_eur" in cash_raw or "external_cash_usd" in cash_raw or "include_in_portfolio" in cash_raw:
+        # Legacy format — migrate
+        warnings.warn(
+            "cash.external_cash_eur/usd and include_in_portfolio are deprecated. "
+            "Use cash.investable and cash.emergency instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        eur = Decimal(str(cash_raw.get("external_cash_eur", 0)))
+        usd = Decimal(str(cash_raw.get("external_cash_usd", 0)))
+        include = cash_raw.get("include_in_portfolio", True)
+        if include:
+            cash_config = CashConfig(
+                eurusd_fx=eurusd_fx,
+                investable=CashCategory(eur=eur, usd=usd),
+                include_in_portfolio=True,
+                external_cash_eur=eur,
+                external_cash_usd=usd,
+            )
+        else:
+            cash_config = CashConfig(
+                eurusd_fx=eurusd_fx,
+                emergency=CashCategory(eur=eur, usd=usd),
+                include_in_portfolio=False,
+                external_cash_eur=eur,
+                external_cash_usd=usd,
+            )
+    else:
+        cash_config = CashConfig(eurusd_fx=eurusd_fx)
 
     # --- output → OutputConfig ---
     output_raw = data.get("output", {})
@@ -167,4 +218,11 @@ def load_unified_config(
         kirchensteuer=gt_raw.get("kirchensteuer", False),
     )
 
-    return targets, rebalance_config, output_config, cash_config, german_tax_config
+    # --- constraints → ConstraintsConfig ---
+    constraints_raw = data.get("constraints", {})
+    min_bonds = constraints_raw.get("min_taxable_bonds_usd", None)
+    constraints_config = ConstraintsConfig(
+        min_taxable_bonds_usd=Decimal(str(min_bonds)) if min_bonds is not None else None,
+    )
+
+    return targets, rebalance_config, output_config, cash_config, german_tax_config, constraints_config

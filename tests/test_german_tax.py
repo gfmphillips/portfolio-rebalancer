@@ -207,6 +207,81 @@ class TestAnnotateTrades:
         annotations = annotate_trades(trades, mapping, config)
         assert len(annotations) == 1
 
+    def test_german_fund_category_override(self):
+        """Explicit german_fund_category in mapping overrides heuristic."""
+        trades = [_make_trade("BND", AccountType.TAXABLE)]
+        mapping = {
+            "BND": TickerMapping(
+                asset_class="bonds",
+                german_fund_category="mischfonds",
+            )
+        }
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert annotations[0].fund_category == GermanFundCategory.MISCHFONDS
+        assert annotations[0].teilfreistellung_pct == Decimal("15")
+        assert any("from mapping" in n for n in annotations[0].notes)
+
+    def test_german_fund_category_fallback(self):
+        """Without override, heuristic is used and noted."""
+        trades = [_make_trade("VTI", AccountType.TAXABLE)]
+        mapping = _make_mapping(VTI="us_equity")
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert annotations[0].fund_category == GermanFundCategory.AKTIENFONDS
+        assert any("inferred from asset class" in n for n in annotations[0].notes)
+
+    def test_is_accumulating_true(self):
+        """is_accumulating=True adds Vorabpauschale note."""
+        trades = [_make_trade("IWDA", AccountType.TAXABLE)]
+        mapping = {
+            "IWDA": TickerMapping(
+                asset_class="intl_equity",
+                domicile="IE",
+                is_accumulating=True,
+            )
+        }
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert annotations[0].is_accumulating is True
+        assert any("Vorabpauschale" in n for n in annotations[0].notes)
+
+    def test_is_accumulating_unknown(self):
+        """is_accumulating=None adds 'unknown -- verify' note."""
+        trades = [_make_trade("VTI", AccountType.TAXABLE)]
+        mapping = _make_mapping(VTI="us_equity")
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert any("unknown" in n for n in annotations[0].notes)
+
+    def test_is_accumulating_false(self):
+        """is_accumulating=False produces no Vorabpauschale note."""
+        trades = [_make_trade("VTI", AccountType.TAXABLE)]
+        mapping = {
+            "VTI": TickerMapping(
+                asset_class="us_equity",
+                is_accumulating=False,
+            )
+        }
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert not any("Vorabpauschale" in n for n in annotations[0].notes)
+        assert not any("unknown" in n for n in annotations[0].notes)
+
+    def test_invalid_german_fund_category(self):
+        """Invalid german_fund_category falls back to OTHER."""
+        trades = [_make_trade("XYZ", AccountType.TAXABLE)]
+        mapping = {
+            "XYZ": TickerMapping(
+                asset_class="us_equity",
+                german_fund_category="invalid_category",
+            )
+        }
+        config = GermanTaxConfig(enabled=True)
+        annotations = annotate_trades(trades, mapping, config)
+        assert annotations[0].fund_category == GermanFundCategory.OTHER
+        assert any("UNKNOWN" in n for n in annotations[0].notes)
+
 
 # ---------------------------------------------------------------------------
 # generate_summary

@@ -1,17 +1,39 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from importlib.metadata import version as pkg_version
 
 from .models import (
     AccountType,
     AllocationTarget,
+    ConsolidationAnalysis,
+    ConsolidationOpportunity,
+    ConstraintCheck,
+    ConstraintsConfig,
     Position,
     RebalanceConfig,
     RebalanceResult,
+    RunMetadata,
     TaxImpact,
+    TaxLot,
     TickerMapping,
     Trade,
 )
+from .models import Transaction
 from .tlh import check_wash_sales, find_tlh_opportunities
+
+def build_run_metadata(eurusd_fx: Decimal) -> RunMetadata:
+    """Create a RunMetadata snapshot for the current run."""
+    try:
+        ver = pkg_version("portfolio-rebalancer")
+    except Exception:
+        ver = "unknown"
+    return RunMetadata(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        eurusd_fx_used=eurusd_fx,
+        tool_version=ver,
+    )
+
 
 TAX_ADVANTAGED = {
     AccountType.TRADITIONAL_IRA,
@@ -63,11 +85,65 @@ def _quantize_shares(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
 
+def check_constraints(
+    positions: list[Position],
+    trades: list[Trade],
+    mapping: dict[str, TickerMapping],
+    constraints: ConstraintsConfig,
+) -> list[ConstraintCheck]:
+    """Check post-trade constraints and return a list of ConstraintCheck results.
+
+    Constraints are checked but NOT enforced — the engine generates trades first,
+    then we report whether the result violates any constraints.
+    """
+    checks: list[ConstraintCheck] = []
+
+    if constraints.min_taxable_bonds_usd is not None:
+        # Current taxable bond value
+        taxable_bond_value = Decimal("0")
+        for p in positions:
+            tm = mapping.get(p.ticker)
+            if tm and tm.asset_class == "bonds" and p.account_type == AccountType.TAXABLE:
+                taxable_bond_value += p.market_value
+
+        # Subtract any bonds sold in taxable, add any bonds bought in taxable
+        for t in trades:
+            tm = mapping.get(t.ticker)
+            if tm and tm.asset_class == "bonds" and t.account_type == AccountType.TAXABLE:
+                if t.action == "SELL":
+                    taxable_bond_value -= t.estimated_value
+                elif t.action == "BUY":
+                    taxable_bond_value += t.estimated_value
+
+        post_trade_value = taxable_bond_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        required = constraints.min_taxable_bonds_usd
+        met = post_trade_value >= required
+        message = (
+            f"Post-trade taxable bonds: ${post_trade_value:,} "
+            f"(minimum: ${required:,})"
+        )
+        if not met:
+            message = f"CONSTRAINT VIOLATED: {message}"
+
+        checks.append(ConstraintCheck(
+            name="min_taxable_bonds_usd",
+            required=required,
+            actual=post_trade_value,
+            met=met,
+            message=message,
+        ))
+
+    return checks
+
+
 def rebalance(
     positions: list[Position],
     targets: list[AllocationTarget],
     mapping: dict[str, TickerMapping],
     config: RebalanceConfig,
+    metadata: RunMetadata | None = None,
+    constraints: ConstraintsConfig | None = None,
+    recent_transactions: list[Transaction] | None = None,
 ) -> RebalanceResult:
     """Run the full rebalancing algorithm."""
     warnings: list[str] = []
@@ -82,6 +158,7 @@ def rebalance(
             drift={},
             trades=[],
             warnings=["Portfolio has no value."],
+            metadata=metadata,
         )
 
     effective_total = total_value + config.cash_to_invest
@@ -133,8 +210,13 @@ def rebalance(
         current_val = value_by_class.get(cls, Decimal("0"))
         target_val = target_amounts.get(cls, Decimal("0"))
         adj = target_val - current_val
-        # Skip if drift below threshold
-        if abs(drift.get(cls, Decimal("0"))) < config.threshold_pct and config.cash_to_invest == 0:
+        # Skip if drift below both thresholds (OR logic: breach either → rebalance)
+        abs_drift = abs(drift.get(cls, Decimal("0")))
+        target_pct = target_allocation.get(cls, Decimal("0"))
+        rel_drift = (abs_drift / target_pct * Decimal("100")) if target_pct > 0 else Decimal("0")
+        abs_ok = abs_drift < config.threshold_pct
+        rel_ok = rel_drift < config.threshold_relative_pct
+        if abs_ok and rel_ok and config.cash_to_invest == 0:
             continue
         if abs(adj) < config.min_trade_value:
             continue
@@ -159,7 +241,7 @@ def rebalance(
 
     # Check for wash sales across all trades
     if config.tlh_enabled:
-        wash_warnings = check_wash_sales(trades, mapping)
+        wash_warnings = check_wash_sales(trades, mapping, recent_transactions)
         for tw in wash_warnings:
             warnings.append(tw)
 
@@ -188,6 +270,14 @@ def rebalance(
         taxable_trades_count=taxable_count,
     )
 
+    # Check constraints
+    constraint_checks: list[ConstraintCheck] = []
+    if constraints is not None:
+        constraint_checks = check_constraints(positions, trades, mapping, constraints)
+        for cc in constraint_checks:
+            if not cc.met:
+                warnings.append(cc.message)
+
     return RebalanceResult(
         total_portfolio_value=total_value,
         current_allocation=current_allocation,
@@ -196,6 +286,8 @@ def rebalance(
         trades=trades,
         warnings=warnings,
         tax_impact=tax_impact,
+        constraints=constraint_checks,
+        metadata=metadata,
     )
 
 
@@ -284,13 +376,22 @@ def _pick_buy_ticker(
     return best.ticker, best.price, best
 
 
+_EMERGENCY_TICKERS = {"CASH-USD-EMERGENCY", "CASH-EUR-EMERGENCY"}
+
+
 def _build_initial_cash_pools(
     positions: list[Position],
     mapping: dict[str, TickerMapping],
 ) -> CashPools:
-    """Build initial cash pools from cash positions."""
+    """Build initial cash pools from cash positions.
+
+    Emergency cash positions are excluded — they are visible in the portfolio
+    total but not available for funding buys.
+    """
     pools = CashPools()
     for p in positions:
+        if p.ticker in _EMERGENCY_TICKERS:
+            continue
         ticker_info = mapping.get(p.ticker)
         if ticker_info and ticker_info.asset_class == "cash":
             pools.add(p.account_name, p.account_type, p.market_value)
@@ -406,6 +507,26 @@ def _allocate_buys(
     return trades
 
 
+def _sort_lots(
+    position: Position, config: RebalanceConfig
+) -> list[TaxLot]:
+    """Sort tax lots by the appropriate strategy for selling.
+
+    - Taxable (HIFO / TLH): highest cost first — minimizes gain (HIFO) and
+      maximizes harvested loss (TLH).  Both goals are served by selling the
+      most-expensive lots first.
+    - Tax-advantaged: FIFO (by acquisition date ascending)
+    """
+    lots = list(position.tax_lots)
+    if position.account_type in TAX_ADVANTAGED:
+        # FIFO: oldest first
+        lots.sort(key=lambda lot: lot.acquisition_date)
+    else:
+        # Taxable (both HIFO and TLH): highest cost first
+        lots.sort(key=lambda lot: lot.cost_basis_per_share, reverse=True)
+    return lots
+
+
 def _generate_rebalance_trades(
     positions: list[Position],
     adjustment_by_class: dict[str, Decimal],
@@ -455,62 +576,121 @@ def _generate_rebalance_trades(
             if p.price <= 0:
                 continue
 
-            sellable_value = min(remaining, p.market_value)
-            shares = _quantize_shares(sellable_value / p.price)
-            if shares <= 0:
-                continue
-            actual_value = (shares * p.price).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP
-            )
+            if p.tax_lots:
+                # Lot-aware selling: one trade per lot consumed
+                sorted_lots = _sort_lots(p, config)
+                lot_strategy = "FIFO"
+                if p.account_type not in TAX_ADVANTAGED:
+                    lot_strategy = "TLH" if config.tlh_enabled else "HIFO"
 
-            trade_warnings: list[str] = []
-            est_gain_loss: Decimal | None = None
+                for lot in sorted_lots:
+                    if remaining <= 0:
+                        break
 
-            # Compute per-share gain/loss if we have cost basis
-            if p.cost_basis_total is not None and p.quantity > 0:
-                gain_per_share = (p.market_value - p.cost_basis_total) / p.quantity
-                est_gain_loss = (gain_per_share * shares).quantize(
+                    lot_value = lot.shares * p.price
+                    sellable_value = min(remaining, lot_value)
+                    shares = _quantize_shares(sellable_value / p.price)
+                    if shares <= 0:
+                        continue
+                    # Don't sell more than the lot has
+                    shares = min(shares, lot.shares)
+                    actual_value = (shares * p.price).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                    trade_warnings: list[str] = []
+                    est_gain_loss = ((p.price - lot.cost_basis_per_share) * shares).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                    if (
+                        p.account_type == AccountType.TAXABLE
+                        and config.avoid_gains_in_taxable
+                        and est_gain_loss > 0
+                    ):
+                        trade_warnings.append(
+                            f"Selling at estimated gain of ${est_gain_loss} in taxable account"
+                        )
+
+                    is_loss = (
+                        p.account_type == AccountType.TAXABLE
+                        and est_gain_loss < 0
+                    )
+
+                    reasoning = f"Reduce overweight {cls} (lot: {lot.acquisition_date}, {lot_strategy})"
+                    if is_loss and config.tlh_enabled:
+                        reasoning += f" (TLH opportunity: ~${abs(est_gain_loss)} loss)"
+
+                    trades.append(
+                        Trade(
+                            account_name=p.account_name,
+                            account_type=p.account_type,
+                            ticker=p.ticker,
+                            action="SELL",
+                            shares=shares,
+                            estimated_value=actual_value,
+                            reasoning=reasoning,
+                            warnings=trade_warnings,
+                            estimated_gain_loss=est_gain_loss,
+                            lot_acquisition_date=lot.acquisition_date,
+                        )
+                    )
+                    pools.add(p.account_name, p.account_type, actual_value)
+                    remaining -= actual_value
+            else:
+                # Blended-basis logic (no lot data)
+                sellable_value = min(remaining, p.market_value)
+                shares = _quantize_shares(sellable_value / p.price)
+                if shares <= 0:
+                    continue
+                actual_value = (shares * p.price).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
 
-            # Check for taxable gain
-            if (
-                p.account_type == AccountType.TAXABLE
-                and config.avoid_gains_in_taxable
-                and est_gain_loss is not None
-                and est_gain_loss > 0
-            ):
-                trade_warnings.append(
-                    f"Selling at estimated gain of ${est_gain_loss} in taxable account"
+                trade_warnings: list[str] = []
+                est_gain_loss: Decimal | None = None
+
+                if p.cost_basis_total is not None and p.quantity > 0:
+                    gain_per_share = (p.market_value - p.cost_basis_total) / p.quantity
+                    est_gain_loss = (gain_per_share * shares).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                if (
+                    p.account_type == AccountType.TAXABLE
+                    and config.avoid_gains_in_taxable
+                    and est_gain_loss is not None
+                    and est_gain_loss > 0
+                ):
+                    trade_warnings.append(
+                        f"Selling at estimated gain of ${est_gain_loss} in taxable account"
+                    )
+
+                is_loss = (
+                    p.account_type == AccountType.TAXABLE
+                    and est_gain_loss is not None
+                    and est_gain_loss < 0
                 )
 
-            # Check for TLH opportunity
-            is_loss = (
-                p.account_type == AccountType.TAXABLE
-                and est_gain_loss is not None
-                and est_gain_loss < 0
-            )
+                reasoning = f"Reduce overweight {cls}"
+                if is_loss and config.tlh_enabled:
+                    reasoning += f" (TLH opportunity: ~${abs(est_gain_loss)} loss)"
 
-            reasoning = f"Reduce overweight {cls}"
-            if is_loss and config.tlh_enabled:
-                reasoning += f" (TLH opportunity: ~${abs(est_gain_loss)} loss)"
-
-            trades.append(
-                Trade(
-                    account_name=p.account_name,
-                    account_type=p.account_type,
-                    ticker=p.ticker,
-                    action="SELL",
-                    shares=shares,
-                    estimated_value=actual_value,
-                    reasoning=reasoning,
-                    warnings=trade_warnings,
-                    estimated_gain_loss=est_gain_loss,
+                trades.append(
+                    Trade(
+                        account_name=p.account_name,
+                        account_type=p.account_type,
+                        ticker=p.ticker,
+                        action="SELL",
+                        shares=shares,
+                        estimated_value=actual_value,
+                        reasoning=reasoning,
+                        warnings=trade_warnings,
+                        estimated_gain_loss=est_gain_loss,
+                    )
                 )
-            )
-            # Credit sell proceeds to the appropriate cash pool
-            pools.add(p.account_name, p.account_type, actual_value)
-            remaining -= actual_value
+                pools.add(p.account_name, p.account_type, actual_value)
+                remaining -= actual_value
 
     # Process buys (underweight classes), largest deficit first
     underweight = sorted(
@@ -534,3 +714,81 @@ def _generate_rebalance_trades(
         )
 
     return trades
+
+
+def analyze_consolidation(
+    positions: list[Position],
+    mapping: dict[str, TickerMapping],
+) -> ConsolidationAnalysis:
+    """Analyze which positions are in end-state (preferred) funds vs legacy funds.
+
+    Returns a ConsolidationAnalysis with per-position opportunities for consolidation.
+    """
+    end_state_value = Decimal("0")
+    legacy_value = Decimal("0")
+    opportunities: list[ConsolidationOpportunity] = []
+
+    for p in positions:
+        ticker_info = mapping.get(p.ticker)
+        if not ticker_info:
+            continue
+        # Skip cash positions
+        if ticker_info.asset_class == "cash":
+            continue
+
+        if ticker_info.preferred:
+            end_state_value += p.market_value
+        else:
+            legacy_value += p.market_value
+
+            if ticker_info.consolidate_to:
+                # Determine if safe to consolidate
+                est_gain_loss: Decimal | None = None
+                if p.cost_basis_total is not None and p.quantity > 0:
+                    est_gain_loss = p.market_value - p.cost_basis_total
+
+                if p.account_type in TAX_ADVANTAGED:
+                    safe = True
+                    reason = "Retirement account — no tax cost"
+                elif est_gain_loss is not None and est_gain_loss <= 0:
+                    safe = True
+                    reason = "At a loss — tax-free to consolidate"
+                elif est_gain_loss is not None and est_gain_loss > 0:
+                    safe = False
+                    reason = "At a gain — wait for loss or spending need"
+                else:
+                    safe = False
+                    reason = "No cost basis data"
+
+                opportunities.append(
+                    ConsolidationOpportunity(
+                        ticker=p.ticker,
+                        account_name=p.account_name,
+                        account_type=p.account_type,
+                        market_value=p.market_value,
+                        consolidate_to=ticker_info.consolidate_to,
+                        safe_to_consolidate=safe,
+                        estimated_gain_loss=est_gain_loss,
+                        reason=reason,
+                    )
+                )
+
+    total = end_state_value + legacy_value
+    if total > 0:
+        end_state_pct = (end_state_value / total * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        legacy_pct = (legacy_value / total * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    else:
+        end_state_pct = Decimal("0")
+        legacy_pct = Decimal("0")
+
+    return ConsolidationAnalysis(
+        end_state_value=end_state_value,
+        legacy_value=legacy_value,
+        end_state_pct=end_state_pct,
+        legacy_pct=legacy_pct,
+        opportunities=opportunities,
+    )

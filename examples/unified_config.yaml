@@ -1,22 +1,26 @@
 allocation:
-  cash: 10
+  us_equity: 48
+  intl_equity: 32
   bonds: 20
-  reit: 5
-  us_equity: 45
-  intl_equity: 20
 
 rebalance:
   threshold_pct: 5.0
+  threshold_relative_pct: 20.0
   min_trade_value: 500
 
 cash:
-  include_in_portfolio: true
-  external_cash_eur: 0
-  external_cash_usd: 0
   eurusd_fx: 1.10
+  investable:
+    eur: 0
+    usd: 0
+  emergency:
+    eur: 0
+    usd: 0
 
 tax:
-  enabled: false
+  enabled: false            # sets both tlh_enabled and avoid_gains_in_taxable if they are not specified
+  # tlh_enabled: true       # optional override: enable tax-loss harvesting independently
+  # avoid_gains_in_taxable: false  # optional override: allow selling at a gain in taxable accounts
 
 accounts:
   "Individual": taxable
@@ -34,7 +38,10 @@ output:
     currency: 0
     pct: 2
 
+# constraints:
+#   min_taxable_bonds_usd: 10000  # warn if post-trade taxable bonds fall below this
+
 german_tax:
-  enabled: false
-  filing_status: single    # single or married
+  enabled: true
+  filing_status: married
   kirchensteuer: false

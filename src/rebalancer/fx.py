@@ -7,7 +7,7 @@ from typing import Literal
 import requests
 from pydantic import BaseModel
 
-from rebalancer.models import AccountType, Position
+from rebalancer.models import AccountType, CashConfig, Position
 
 # ---------------------------------------------------------------------------
 # Model
@@ -107,4 +107,66 @@ def convert_bank_cash_to_positions(
                     cost_basis_total=None,
                 )
             )
+    return positions
+
+
+def build_bank_cash_positions(cash_config: CashConfig) -> list[Position]:
+    """Build Position objects for both investable and emergency bank cash.
+
+    Investable cash uses tickers CASH-USD / CASH-EUR.
+    Emergency cash uses tickers CASH-USD-EMERGENCY / CASH-EUR-EMERGENCY.
+    """
+    eur_usd_rate = cash_config.eurusd_fx
+    positions: list[Position] = []
+
+    # Investable cash
+    if cash_config.investable.usd > 0:
+        positions.append(Position(
+            account_name="Bank (USD)",
+            account_type=AccountType.TAXABLE,
+            ticker="CASH-USD",
+            description="Bank Cash (USD) - investable",
+            quantity=cash_config.investable.usd,
+            price=Decimal("1"),
+            market_value=cash_config.investable.usd,
+            cost_basis_total=None,
+        ))
+    if cash_config.investable.eur > 0:
+        usd_value = (cash_config.investable.eur * eur_usd_rate).quantize(Decimal("0.01"))
+        positions.append(Position(
+            account_name="Bank (EUR)",
+            account_type=AccountType.TAXABLE,
+            ticker="CASH-EUR",
+            description="Bank Cash (EUR) - investable",
+            quantity=cash_config.investable.eur,
+            price=eur_usd_rate,
+            market_value=usd_value,
+            cost_basis_total=None,
+        ))
+
+    # Emergency cash
+    if cash_config.emergency.usd > 0:
+        positions.append(Position(
+            account_name="Bank (USD) - Emergency",
+            account_type=AccountType.TAXABLE,
+            ticker="CASH-USD-EMERGENCY",
+            description="Bank Cash (USD) - emergency (excluded from rebalancing)",
+            quantity=cash_config.emergency.usd,
+            price=Decimal("1"),
+            market_value=cash_config.emergency.usd,
+            cost_basis_total=None,
+        ))
+    if cash_config.emergency.eur > 0:
+        usd_value = (cash_config.emergency.eur * eur_usd_rate).quantize(Decimal("0.01"))
+        positions.append(Position(
+            account_name="Bank (EUR) - Emergency",
+            account_type=AccountType.TAXABLE,
+            ticker="CASH-EUR-EMERGENCY",
+            description="Bank Cash (EUR) - emergency (excluded from rebalancing)",
+            quantity=cash_config.emergency.eur,
+            price=eur_usd_rate,
+            market_value=usd_value,
+            cost_basis_total=None,
+        ))
+
     return positions

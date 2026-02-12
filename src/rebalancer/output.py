@@ -7,6 +7,8 @@ from rich.table import Table
 from collections import OrderedDict
 
 from .models import (
+    ConsolidationAnalysis,
+    ConstraintCheck,
     GermanTaxAnnotation,
     GermanTaxConfig,
     OutputConfig,
@@ -324,8 +326,16 @@ def print_rebalance_report(
     # Tax impact summary
     ti = result.tax_impact
     if ti.taxable_trades_count > 0:
+        has_lot_trades = any(t.lot_acquisition_date is not None for t in result.trades if t.action == "SELL")
+        has_blended_trades = any(t.lot_acquisition_date is None for t in result.trades if t.action == "SELL")
+        if has_lot_trades and not has_blended_trades:
+            basis_label = " (lot-specific)"
+        elif has_lot_trades and has_blended_trades:
+            basis_label = " (mixed: lot-specific + approximate)"
+        else:
+            basis_label = " (approximate)"
         console.print()
-        console.print("[bold]Estimated Tax Impact (Taxable Accounts Only)[/bold]")
+        console.print(f"[bold]Estimated Tax Impact (Taxable Accounts Only){basis_label}[/bold]")
         if ti.estimated_total_gains > 0:
             console.print(f"  Estimated gains:  [red]${ti.estimated_total_gains:,.2f}[/red]")
         if ti.estimated_total_losses < 0:
@@ -333,11 +343,31 @@ def print_rebalance_report(
         net_style = "red" if ti.estimated_net > 0 else "green"
         console.print(f"  Net:              [{net_style}]${ti.estimated_net:,.2f}[/{net_style}]")
 
+    # Constraint checks
+    if result.constraints:
+        console.print()
+        console.print("[bold]Constraint Checks[/bold]")
+        ct = Table()
+        ct.add_column("Constraint", style="bold")
+        ct.add_column("Required", justify="right")
+        ct.add_column("Actual", justify="right")
+        ct.add_column("Status", justify="center")
+        for cc in result.constraints:
+            status = "[green]MET[/green]" if cc.met else "[red]VIOLATED[/red]"
+            ct.add_row(cc.name, f"${cc.required:,}", f"${cc.actual:,}", status)
+        console.print(ct)
+
     # Global warnings
     if result.warnings:
         console.print()
         for w in result.warnings:
             console.print(f"[yellow]⚠ {w}[/yellow]")
+
+    # Run metadata footer
+    if result.metadata:
+        console.print()
+        m = result.metadata
+        console.print(f"[dim]Run: {m.timestamp} | EUR/USD: {m.eurusd_fx_used} | v{m.tool_version}[/dim]")
 
 
 def write_markdown_report(
@@ -396,18 +426,40 @@ def write_markdown_report(
     # Tax impact
     ti = result.tax_impact
     if ti.taxable_trades_count > 0:
-        lines.append("\n## Estimated Tax Impact (Taxable Accounts Only)\n")
+        has_lot_trades = any(t.lot_acquisition_date is not None for t in result.trades if t.action == "SELL")
+        has_blended_trades = any(t.lot_acquisition_date is None for t in result.trades if t.action == "SELL")
+        if has_lot_trades and not has_blended_trades:
+            basis_label = " (lot-specific)"
+        elif has_lot_trades and has_blended_trades:
+            basis_label = " (mixed: lot-specific + approximate)"
+        else:
+            basis_label = " (approximate)"
+        lines.append(f"\n## Estimated Tax Impact (Taxable Accounts Only){basis_label}\n")
         if ti.estimated_total_gains > 0:
             lines.append(f"- Estimated gains: ${ti.estimated_total_gains:,.2f}")
         if ti.estimated_total_losses < 0:
             lines.append(f"- Estimated losses: ${ti.estimated_total_losses:,.2f}")
         lines.append(f"- **Net: ${ti.estimated_net:,.2f}**")
 
+    # Constraints
+    if result.constraints:
+        lines.append("\n## Constraint Checks\n")
+        lines.append("| Constraint | Required | Actual | Status |")
+        lines.append("|---|---:|---:|:---:|")
+        for cc in result.constraints:
+            status = "MET" if cc.met else "VIOLATED"
+            lines.append(f"| {cc.name} | ${cc.required:,} | ${cc.actual:,} | {status} |")
+
     # Warnings
     if result.warnings:
         lines.append("\n## Warnings\n")
         for w in result.warnings:
             lines.append(f"- ⚠ {w}")
+
+    # Run metadata
+    if result.metadata:
+        m = result.metadata
+        lines.append(f"\n---\n*Run: {m.timestamp} | EUR/USD: {m.eurusd_fx_used} | v{m.tool_version}*")
 
     lines.append("")
     path.write_text("\n".join(lines))
@@ -499,6 +551,80 @@ def write_german_tax_markdown(
         lines.append(
             f"\n**Warning:** {summary['pfic_risk_count']} position(s) with PFIC risk. "
             "Consult your tax advisor."
+        )
+
+    return lines
+
+
+def print_consolidation_report(analysis: ConsolidationAnalysis) -> None:
+    """Print a Rich report showing consolidation progress and opportunities."""
+    console.print()
+    console.print("[bold]Consolidation Progress[/bold]")
+    console.print(
+        f"  End-state funds: [green]{_format_currency(analysis.end_state_value)}[/green] "
+        f"({analysis.end_state_pct}%)"
+    )
+    console.print(
+        f"  Legacy funds:    [yellow]{_format_currency(analysis.legacy_value)}[/yellow] "
+        f"({analysis.legacy_pct}%)"
+    )
+
+    if not analysis.opportunities:
+        console.print("\n[green]No consolidation opportunities (all positions are end-state).[/green]")
+        return
+
+    table = Table(title="Consolidation Opportunities")
+    table.add_column("Ticker", style="bold")
+    table.add_column("Account", style="cyan")
+    table.add_column("Value", justify="right", style="green")
+    table.add_column("Consolidate To", style="bold")
+    table.add_column("Safe?", justify="center")
+    table.add_column("Gain/Loss", justify="right")
+    table.add_column("Reason")
+
+    for opp in analysis.opportunities:
+        safe_str = "[green]Yes[/green]" if opp.safe_to_consolidate else "[yellow]Wait[/yellow]"
+        gl_str = _format_currency(opp.estimated_gain_loss) if opp.estimated_gain_loss is not None else "-"
+        table.add_row(
+            opp.ticker,
+            opp.account_name,
+            _format_currency(opp.market_value),
+            opp.consolidate_to,
+            safe_str,
+            gl_str,
+            opp.reason,
+        )
+
+    console.print()
+    console.print(table)
+
+
+def write_consolidation_markdown(analysis: ConsolidationAnalysis) -> list[str]:
+    """Return markdown lines for the consolidation report."""
+    lines: list[str] = []
+    lines.append("\n## Consolidation Progress\n")
+    lines.append(
+        f"- **End-state funds:** {_format_currency(analysis.end_state_value)} "
+        f"({analysis.end_state_pct}%)"
+    )
+    lines.append(
+        f"- **Legacy funds:** {_format_currency(analysis.legacy_value)} "
+        f"({analysis.legacy_pct}%)"
+    )
+
+    if not analysis.opportunities:
+        lines.append("\nNo consolidation opportunities (all positions are end-state).\n")
+        return lines
+
+    lines.append("\n| Ticker | Account | Value | Consolidate To | Safe? | Gain/Loss | Reason |")
+    lines.append("|---|---|---:|---|:---:|---:|---|")
+
+    for opp in analysis.opportunities:
+        safe_str = "Yes" if opp.safe_to_consolidate else "Wait"
+        gl_str = _format_currency(opp.estimated_gain_loss) if opp.estimated_gain_loss is not None else "-"
+        lines.append(
+            f"| {opp.ticker} | {opp.account_name} | {_format_currency(opp.market_value)} "
+            f"| {opp.consolidate_to} | {safe_str} | {gl_str} | {opp.reason} |"
         )
 
     return lines

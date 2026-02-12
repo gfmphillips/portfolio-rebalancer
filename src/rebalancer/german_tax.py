@@ -93,12 +93,28 @@ def annotate_trades(
         if tm is None:
             continue
 
-        category = classify_fund(tm.asset_class)
+        # Determine fund category: explicit override or heuristic
+        if tm.german_fund_category is not None:
+            try:
+                category = GermanFundCategory(tm.german_fund_category)
+                category_source = "from mapping"
+            except ValueError:
+                category = GermanFundCategory.OTHER
+                category_source = f"UNKNOWN (invalid value '{tm.german_fund_category}' in mapping)"
+        else:
+            category = classify_fund(tm.asset_class)
+            category_source = "inferred from asset class"
+
         tf_pct = get_teilfreistellung(category)
         pfic = check_pfic_risk(tm.domicile)
         effective = _effective_tax_rate(tf_pct)
 
+        # Determine accumulating status
+        is_accumulating = tm.is_accumulating if tm.is_accumulating is not None else False
+
         notes: list[str] = []
+        notes.append(f"Category: {category_source}")
+
         if tf_pct > 0:
             notes.append(
                 f"{tf_pct}% Teilfreistellung applies -- "
@@ -106,6 +122,11 @@ def annotate_trades(
             )
         else:
             notes.append(f"No Teilfreistellung -- full {_ABGELTUNGSTEUER}% rate")
+
+        if tm.is_accumulating is None:
+            notes.append("Accumulating/distributing: unknown -- verify")
+        elif tm.is_accumulating:
+            notes.append("Accumulating fund -- Vorabpauschale may apply")
 
         if pfic:
             notes.append(
@@ -118,6 +139,7 @@ def annotate_trades(
                 ticker=ticker,
                 fund_category=category,
                 teilfreistellung_pct=tf_pct,
+                is_accumulating=is_accumulating,
                 pfic_risk=pfic,
                 domicile=tm.domicile,
                 notes=notes,

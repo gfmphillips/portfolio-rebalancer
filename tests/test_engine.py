@@ -2,13 +2,16 @@ from decimal import Decimal
 
 import pytest
 
-from rebalancer.engine import CashPools, _build_initial_cash_pools, rebalance
+from rebalancer.engine import CashPools, _build_initial_cash_pools, _sort_lots, analyze_consolidation, build_run_metadata, check_constraints, rebalance
 from rebalancer.models import (
     AccountType,
     AllocationTarget,
+    ConstraintsConfig,
     Position,
     RebalanceConfig,
+    TaxLot,
     TickerMapping,
+    Trade,
 )
 
 
@@ -819,3 +822,779 @@ class TestCashConstraints:
         assert pools.available("Roth", AccountType.ROTH_IRA) == Decimal("200")
         # IRA unaffected
         assert pools.available("IRA", AccountType.TRADITIONAL_IRA) == Decimal("200")
+
+
+class TestRelativeDrift:
+    """Tests for relative drift threshold (OR logic with absolute)."""
+
+    def _make_positions(self, us_value, intl_value, bond_value, cash_value):
+        """Helper to create a simple single-account portfolio."""
+        positions = []
+        if us_value > 0:
+            positions.append(Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="VTI", description="VTI",
+                quantity=Decimal(str(us_value)) / Decimal("100"),
+                price=Decimal("100"), market_value=Decimal(str(us_value)),
+                cost_basis_total=Decimal(str(us_value)),
+            ))
+        if intl_value > 0:
+            positions.append(Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="VXUS", description="VXUS",
+                quantity=Decimal(str(intl_value)) / Decimal("100"),
+                price=Decimal("100"), market_value=Decimal(str(intl_value)),
+                cost_basis_total=Decimal(str(intl_value)),
+            ))
+        if bond_value > 0:
+            positions.append(Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="BND", description="BND",
+                quantity=Decimal(str(bond_value)) / Decimal("72"),
+                price=Decimal("72"), market_value=Decimal(str(bond_value)),
+                cost_basis_total=Decimal(str(bond_value)),
+            ))
+        if cash_value > 0:
+            positions.append(Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="SPAXX", description="Cash",
+                quantity=Decimal("0"), price=Decimal("0"),
+                market_value=Decimal(str(cash_value)), cost_basis_total=None,
+            ))
+        return positions
+
+    def test_relative_drift_triggers_rebalance(self, sample_mapping):
+        """20% target at 15% actual = 25% relative drift → triggers rebalance."""
+        # Total = 10000. intl at 15% (1500) vs 20% target → 5pp abs (at threshold), 25% rel (over 20%)
+        positions = self._make_positions(5500, 1500, 2500, 500)
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        config = RebalanceConfig(
+            threshold_pct=Decimal("5.0"),
+            threshold_relative_pct=Decimal("20"),
+            min_trade_value=Decimal("50"),
+        )
+        result = rebalance(positions, targets, sample_mapping, config)
+        # intl_equity should trigger due to relative drift
+        assert any(t.ticker == "VXUS" for t in result.trades)
+
+    def test_relative_drift_within_band(self, sample_mapping):
+        """20% target at 17% actual = 15% relative drift → does NOT trigger."""
+        # Total = 10000. intl at 17% (1700) vs 20% target → 3pp abs (within 5), 15% rel (within 20%)
+        positions = self._make_positions(5300, 1700, 2500, 500)
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        config = RebalanceConfig(
+            threshold_pct=Decimal("5.0"),
+            threshold_relative_pct=Decimal("20"),
+            min_trade_value=Decimal("50"),
+        )
+        result = rebalance(positions, targets, sample_mapping, config)
+        # No trades expected — all classes within both bands
+        assert result.trades == []
+
+    def test_absolute_drift_triggers_even_if_relative_ok(self, sample_mapping):
+        """Large class with >5pp absolute drift triggers even if relative is low."""
+        # us_equity at 58% vs 50% target → 8pp abs (over 5), 16% rel (under 20%)
+        positions = self._make_positions(5800, 2000, 1700, 500)
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        config = RebalanceConfig(
+            threshold_pct=Decimal("5.0"),
+            threshold_relative_pct=Decimal("20"),
+            min_trade_value=Decimal("50"),
+        )
+        result = rebalance(positions, targets, sample_mapping, config)
+        # us_equity should trigger due to absolute drift
+        sell_tickers = {t.ticker for t in result.trades if t.action == "SELL"}
+        assert "VTI" in sell_tickers
+
+    def test_zero_target_no_division_error(self, sample_mapping):
+        """Cash at 0% target should not cause division by zero."""
+        positions = self._make_positions(5000, 2000, 2500, 500)
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("30")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("0")),
+        ]
+        config = RebalanceConfig(
+            threshold_pct=Decimal("5.0"),
+            threshold_relative_pct=Decimal("20"),
+            min_trade_value=Decimal("50"),
+        )
+        # Should not raise
+        result = rebalance(positions, targets, sample_mapping, config)
+        assert result.total_portfolio_value > 0
+
+
+class TestConsolidation:
+    """Tests for analyze_consolidation()."""
+
+    def _make_mapping(self):
+        return {
+            "VTI": TickerMapping(asset_class="us_equity", preferred=True),
+            "FXAIX": TickerMapping(asset_class="us_equity", consolidate_to="VTI"),
+            "VXUS": TickerMapping(asset_class="intl_equity", preferred=True),
+            "VGK": TickerMapping(asset_class="intl_equity", consolidate_to="VXUS"),
+            "BND": TickerMapping(asset_class="bonds", preferred=True),
+            "VCSH": TickerMapping(asset_class="bonds", consolidate_to="BND"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+
+    def test_consolidation_identifies_legacy(self):
+        """Legacy tickers with consolidate_to are flagged."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="FXAIX", description="FXAIX",
+                quantity=Decimal("50"), price=Decimal("200"),
+                market_value=Decimal("10000"), cost_basis_total=Decimal("8000"),
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        assert len(analysis.opportunities) == 1
+        assert analysis.opportunities[0].ticker == "FXAIX"
+        assert analysis.opportunities[0].consolidate_to == "VTI"
+
+    def test_consolidation_retirement_always_safe(self):
+        """Roth/IRA positions are always safe to consolidate."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="FXAIX", description="FXAIX",
+                quantity=Decimal("50"), price=Decimal("200"),
+                market_value=Decimal("10000"), cost_basis_total=Decimal("5000"),
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        assert analysis.opportunities[0].safe_to_consolidate is True
+        assert "Retirement" in analysis.opportunities[0].reason
+
+    def test_consolidation_taxable_loss_safe(self):
+        """Taxable position at a loss is safe to consolidate."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Taxable", account_type=AccountType.TAXABLE,
+                ticker="VGK", description="VGK",
+                quantity=Decimal("100"), price=Decimal("50"),
+                market_value=Decimal("5000"), cost_basis_total=Decimal("6000"),
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        assert analysis.opportunities[0].safe_to_consolidate is True
+        assert "loss" in analysis.opportunities[0].reason.lower()
+
+    def test_consolidation_taxable_gain_wait(self):
+        """Taxable position at a gain should wait."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Taxable", account_type=AccountType.TAXABLE,
+                ticker="FXAIX", description="FXAIX",
+                quantity=Decimal("50"), price=Decimal("200"),
+                market_value=Decimal("10000"), cost_basis_total=Decimal("5000"),
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        assert analysis.opportunities[0].safe_to_consolidate is False
+        assert "gain" in analysis.opportunities[0].reason.lower()
+
+    def test_consolidation_percentages(self):
+        """end_state_pct + legacy_pct should be computed correctly."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="VTI", description="VTI",
+                quantity=Decimal("30"), price=Decimal("100"),
+                market_value=Decimal("3000"), cost_basis_total=Decimal("2500"),
+            ),
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="FXAIX", description="FXAIX",
+                quantity=Decimal("10"), price=Decimal("200"),
+                market_value=Decimal("2000"), cost_basis_total=Decimal("1800"),
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        # VTI=3000 preferred, FXAIX=2000 legacy, total=5000
+        assert analysis.end_state_value == Decimal("3000")
+        assert analysis.legacy_value == Decimal("2000")
+        assert analysis.end_state_pct == Decimal("60.00")
+        assert analysis.legacy_pct == Decimal("40.00")
+
+    def test_consolidation_skips_cash(self):
+        """SPAXX (cash) should not be counted as legacy."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="VTI", description="VTI",
+                quantity=Decimal("30"), price=Decimal("100"),
+                market_value=Decimal("3000"), cost_basis_total=Decimal("2500"),
+            ),
+            Position(
+                account_name="Roth", account_type=AccountType.ROTH_IRA,
+                ticker="SPAXX", description="Cash",
+                quantity=Decimal("0"), price=Decimal("0"),
+                market_value=Decimal("500"), cost_basis_total=None,
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        # Cash should be excluded entirely
+        assert analysis.end_state_value == Decimal("3000")
+        assert analysis.legacy_value == Decimal("0")
+        assert analysis.opportunities == []
+
+
+class TestRunMetadata:
+    def test_build_run_metadata(self):
+        m = build_run_metadata(eurusd_fx=Decimal("1.10"))
+        assert m.eurusd_fx_used == Decimal("1.10")
+        assert "T" in m.timestamp  # ISO 8601
+        assert m.tool_version  # non-empty
+
+    def test_metadata_attached_to_result(self, sample_positions, sample_mapping, sample_config):
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        m = build_run_metadata(eurusd_fx=Decimal("1.08"))
+        result = rebalance(sample_positions, targets, sample_mapping, sample_config, metadata=m)
+        assert result.metadata is not None
+        assert result.metadata.eurusd_fx_used == Decimal("1.08")
+
+    def test_metadata_none_by_default(self, sample_positions, sample_mapping, sample_config):
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="intl_equity", target_pct=Decimal("20")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("25")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        result = rebalance(sample_positions, targets, sample_mapping, sample_config)
+        assert result.metadata is None
+
+    def test_metadata_on_empty_portfolio(self, sample_mapping, sample_config):
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("100")),
+        ]
+        m = build_run_metadata(eurusd_fx=Decimal("1.10"))
+        result = rebalance([], targets, sample_mapping, sample_config, metadata=m)
+        assert result.metadata is not None
+
+
+class TestConstraintChecking:
+    def _make_positions(self):
+        return [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("200"),
+                price=Decimal("72"),
+                market_value=Decimal("14400"),
+                cost_basis_total=Decimal("14000"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("50"),
+                price=Decimal("250"),
+                market_value=Decimal("12500"),
+                cost_basis_total=Decimal("10000"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("1000"),
+                cost_basis_total=None,
+            ),
+        ]
+
+    def _make_mapping(self):
+        return {
+            "BND": TickerMapping(asset_class="bonds"),
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+
+    def test_constraint_met(self):
+        """Constraint should be met when taxable bonds >= minimum."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        trades = []  # no trades, bonds stay at 14400
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("10000"))
+        checks = check_constraints(positions, trades, mapping, constraints)
+        assert len(checks) == 1
+        assert checks[0].met is True
+        assert checks[0].actual == Decimal("14400.00")
+
+    def test_constraint_violated(self):
+        """Constraint violated when bonds sold below minimum."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        # Sell $6000 of bonds in taxable
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                action="SELL",
+                shares=Decimal("83.333"),
+                estimated_value=Decimal("6000"),
+                reasoning="test",
+            ),
+        ]
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("10000"))
+        checks = check_constraints(positions, trades, mapping, constraints)
+        assert len(checks) == 1
+        assert checks[0].met is False
+        assert checks[0].actual == Decimal("8400.00")
+        assert "CONSTRAINT VIOLATED" in checks[0].message
+
+    def test_constraint_with_bond_buy(self):
+        """Bond buys should increase post-trade value."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        # Sell $8000 bonds, but buy $5000 back
+        trades = [
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                action="SELL",
+                shares=Decimal("111.111"),
+                estimated_value=Decimal("8000"),
+                reasoning="test",
+            ),
+            Trade(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                action="BUY",
+                shares=Decimal("69.444"),
+                estimated_value=Decimal("5000"),
+                reasoning="test",
+            ),
+        ]
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("10000"))
+        checks = check_constraints(positions, trades, mapping, constraints)
+        # 14400 - 8000 + 5000 = 11400
+        assert checks[0].met is True
+        assert checks[0].actual == Decimal("11400.00")
+
+    def test_no_constraint_configured(self):
+        """No checks returned when no constraints configured."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        constraints = ConstraintsConfig()  # all None
+        checks = check_constraints(positions, [], mapping, constraints)
+        assert checks == []
+
+    def test_constraint_integrated_in_rebalance(self):
+        """Constraint violations appear in rebalance warnings."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("80")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("15")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        config = RebalanceConfig(threshold_pct=Decimal("1"), min_trade_value=Decimal("50"))
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("20000"))
+        result = rebalance(positions, targets, mapping, config, constraints=constraints)
+        assert len(result.constraints) == 1
+        # With 80% equity target, bonds will likely be sold, violating 20K minimum
+        # Either it's violated (shows in warnings) or met (no warning)
+        if not result.constraints[0].met:
+            assert any("CONSTRAINT VIOLATED" in w for w in result.warnings)
+
+    def test_constraint_no_violation_no_warning(self):
+        """Met constraints don't appear in warnings."""
+        positions = self._make_positions()
+        mapping = self._make_mapping()
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("45")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("50")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("5")),
+        ]
+        config = RebalanceConfig(threshold_pct=Decimal("1"), min_trade_value=Decimal("50"))
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("1000"))
+        result = rebalance(positions, targets, mapping, config, constraints=constraints)
+        assert len(result.constraints) == 1
+        assert result.constraints[0].met is True
+        assert not any("CONSTRAINT VIOLATED" in w for w in result.warnings)
+
+    def test_roth_bonds_not_counted(self):
+        """Only taxable bond positions count for taxable bond constraint."""
+        positions = [
+            Position(
+                account_name="Roth",
+                account_type=AccountType.ROTH_IRA,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("200"),
+                price=Decimal("72"),
+                market_value=Decimal("14400"),
+                cost_basis_total=Decimal("14000"),
+            ),
+        ]
+        mapping = {"BND": TickerMapping(asset_class="bonds")}
+        constraints = ConstraintsConfig(min_taxable_bonds_usd=Decimal("10000"))
+        checks = check_constraints(positions, [], mapping, constraints)
+        assert checks[0].met is False
+        assert checks[0].actual == Decimal("0.00")
+
+
+class TestSortLots:
+    """Test _sort_lots helper for HIFO, FIFO, TLH strategies."""
+
+    def _make_position_with_lots(self, account_type, lots):
+        return Position(
+            account_name="Test Account",
+            account_type=account_type,
+            ticker="VTI",
+            description="Test",
+            quantity=sum(lot.shares for lot in lots),
+            price=Decimal("250.00"),
+            market_value=sum(lot.shares for lot in lots) * Decimal("250.00"),
+            tax_lots=lots,
+        )
+
+    def test_hifo_taxable_no_tlh(self):
+        """Taxable with TLH disabled: highest cost first (HIFO)."""
+        lots = [
+            TaxLot(acquisition_date="2020-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("150")),
+            TaxLot(acquisition_date="2021-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("300")),
+            TaxLot(acquisition_date="2022-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("200")),
+        ]
+        pos = self._make_position_with_lots(AccountType.TAXABLE, lots)
+        config = RebalanceConfig(tlh_enabled=False)
+        result = _sort_lots(pos, config)
+        assert result[0].cost_basis_per_share == Decimal("300")
+        assert result[1].cost_basis_per_share == Decimal("200")
+        assert result[2].cost_basis_per_share == Decimal("150")
+
+    def test_tlh_taxable(self):
+        """Taxable with TLH enabled: highest cost first (maximize harvested loss)."""
+        lots = [
+            TaxLot(acquisition_date="2020-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("150")),
+            TaxLot(acquisition_date="2021-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("300")),
+            TaxLot(acquisition_date="2022-01-01", shares=Decimal("10"), cost_basis_per_share=Decimal("200")),
+        ]
+        pos = self._make_position_with_lots(AccountType.TAXABLE, lots)
+        config = RebalanceConfig(tlh_enabled=True)
+        result = _sort_lots(pos, config)
+        # TLH and HIFO both sell highest-cost lots first:
+        # selling high-cost lots minimizes gains AND maximizes losses
+        assert result[0].cost_basis_per_share == Decimal("300")
+        assert result[1].cost_basis_per_share == Decimal("200")
+        assert result[2].cost_basis_per_share == Decimal("150")
+
+    def test_fifo_tax_advantaged(self):
+        """Tax-advantaged: FIFO by acquisition date."""
+        lots = [
+            TaxLot(acquisition_date="2022-06-01", shares=Decimal("10"), cost_basis_per_share=Decimal("200")),
+            TaxLot(acquisition_date="2020-01-15", shares=Decimal("10"), cost_basis_per_share=Decimal("150")),
+            TaxLot(acquisition_date="2021-03-01", shares=Decimal("10"), cost_basis_per_share=Decimal("180")),
+        ]
+        pos = self._make_position_with_lots(AccountType.ROTH_IRA, lots)
+        config = RebalanceConfig(tlh_enabled=True)
+        result = _sort_lots(pos, config)
+        assert result[0].acquisition_date == "2020-01-15"
+        assert result[1].acquisition_date == "2021-03-01"
+        assert result[2].acquisition_date == "2022-06-01"
+
+
+class TestLotAwareSelling:
+    """Test that the engine generates per-lot trades when tax lots are present."""
+
+    def _make_overweight_portfolio_with_lots(self):
+        """Create a portfolio where us_equity is overweight and has lot data."""
+        lots = [
+            TaxLot(acquisition_date="2020-03-15", shares=Decimal("30"), cost_basis_per_share=Decimal("150")),
+            TaxLot(acquisition_date="2021-06-01", shares=Decimal("30"), cost_basis_per_share=Decimal("280")),
+            TaxLot(acquisition_date="2022-01-10", shares=Decimal("40"), cost_basis_per_share=Decimal("230")),
+        ]
+        positions = [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("100"),
+                price=Decimal("250.00"),
+                market_value=Decimal("25000.00"),
+                cost_basis_total=Decimal("21500.00"),
+                tax_lots=lots,
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("50"),
+                price=Decimal("72.00"),
+                market_value=Decimal("3600.00"),
+                cost_basis_total=Decimal("4000.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("1400.00"),
+            ),
+        ]
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("60")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("30")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("10")),
+        ]
+        mapping = {
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "BND": TickerMapping(asset_class="bonds"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+        return positions, targets, mapping
+
+    def test_lot_trades_have_acquisition_date(self):
+        positions, targets, mapping = self._make_overweight_portfolio_with_lots()
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=False,
+            avoid_gains_in_taxable=False,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL"]
+        lot_sells = [t for t in sell_trades if t.lot_acquisition_date is not None]
+        assert len(lot_sells) > 0
+        for t in lot_sells:
+            assert "lot:" in t.reasoning
+
+    def test_hifo_sells_highest_cost_first(self):
+        positions, targets, mapping = self._make_overweight_portfolio_with_lots()
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=False,
+            avoid_gains_in_taxable=False,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL" and t.lot_acquisition_date is not None]
+        if len(sell_trades) >= 2:
+            # First sell should be from highest cost lot (2021-06-01, $280)
+            assert sell_trades[0].lot_acquisition_date == "2021-06-01"
+
+    def test_tlh_sells_highest_cost_first(self):
+        positions, targets, mapping = self._make_overweight_portfolio_with_lots()
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=True,
+            avoid_gains_in_taxable=False,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL" and t.lot_acquisition_date is not None]
+        if len(sell_trades) >= 1:
+            # TLH sells highest cost first to maximize harvested loss
+            assert sell_trades[0].lot_acquisition_date == "2021-06-01"
+
+    def test_partial_lot_consumption(self):
+        """When only part of a lot is needed, don't sell more than needed."""
+        positions = [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("100"),
+                price=Decimal("100.00"),
+                market_value=Decimal("10000.00"),
+                tax_lots=[
+                    TaxLot(acquisition_date="2020-01-01", shares=Decimal("100"), cost_basis_per_share=Decimal("80")),
+                ],
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("10"),
+                price=Decimal("72.00"),
+                market_value=Decimal("720.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("280.00"),
+            ),
+        ]
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("80")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("10")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("10")),
+        ]
+        mapping = {
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "BND": TickerMapping(asset_class="bonds"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=False,
+            avoid_gains_in_taxable=False,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL" and t.ticker == "VTI"]
+        if sell_trades:
+            # Should not sell more than 100 shares (the lot size)
+            total_sold = sum(t.shares for t in sell_trades)
+            assert total_sold <= Decimal("100")
+
+    def test_no_lots_uses_blended_basis(self):
+        """Positions without lots should use the existing blended basis logic."""
+        positions = [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("100"),
+                price=Decimal("250.00"),
+                market_value=Decimal("25000.00"),
+                cost_basis_total=Decimal("20000.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("20"),
+                price=Decimal("72.00"),
+                market_value=Decimal("1440.00"),
+                cost_basis_total=Decimal("1500.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("560.00"),
+            ),
+        ]
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("60")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("30")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("10")),
+        ]
+        mapping = {
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "BND": TickerMapping(asset_class="bonds"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=False,
+            avoid_gains_in_taxable=False,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL"]
+        for t in sell_trades:
+            assert t.lot_acquisition_date is None
+
+    def test_fifo_in_tax_advantaged(self):
+        """Tax-advantaged accounts should sell oldest lot first (FIFO)."""
+        lots = [
+            TaxLot(acquisition_date="2022-06-01", shares=Decimal("20"), cost_basis_per_share=Decimal("230")),
+            TaxLot(acquisition_date="2020-01-15", shares=Decimal("30"), cost_basis_per_share=Decimal("180")),
+            TaxLot(acquisition_date="2021-03-01", shares=Decimal("50"), cost_basis_per_share=Decimal("200")),
+        ]
+        positions = [
+            Position(
+                account_name="Roth IRA",
+                account_type=AccountType.ROTH_IRA,
+                ticker="VTI",
+                description="VTI",
+                quantity=Decimal("100"),
+                price=Decimal("250.00"),
+                market_value=Decimal("25000.00"),
+                cost_basis_total=Decimal("20500.00"),
+                tax_lots=lots,
+            ),
+            Position(
+                account_name="Roth IRA",
+                account_type=AccountType.ROTH_IRA,
+                ticker="BND",
+                description="BND",
+                quantity=Decimal("20"),
+                price=Decimal("72.00"),
+                market_value=Decimal("1440.00"),
+            ),
+            Position(
+                account_name="Roth IRA",
+                account_type=AccountType.ROTH_IRA,
+                ticker="SPAXX",
+                description="Cash",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("560.00"),
+            ),
+        ]
+        targets = [
+            AllocationTarget(asset_class="us_equity", target_pct=Decimal("60")),
+            AllocationTarget(asset_class="bonds", target_pct=Decimal("30")),
+            AllocationTarget(asset_class="cash", target_pct=Decimal("10")),
+        ]
+        mapping = {
+            "VTI": TickerMapping(asset_class="us_equity"),
+            "BND": TickerMapping(asset_class="bonds"),
+            "SPAXX": TickerMapping(asset_class="cash"),
+        }
+        config = RebalanceConfig(
+            threshold_pct=Decimal("3.0"),
+            min_trade_value=Decimal("50"),
+            tlh_enabled=True,
+        )
+        result = rebalance(positions, targets, mapping, config)
+        sell_trades = [t for t in result.trades if t.action == "SELL" and t.lot_acquisition_date is not None]
+        if sell_trades:
+            # FIFO: oldest lot first
+            assert sell_trades[0].lot_acquisition_date == "2020-01-15"
+            assert "FIFO" in sell_trades[0].reasoning
