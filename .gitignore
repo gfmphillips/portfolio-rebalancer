@@ -22,3 +22,10 @@ Thumbs.db
 
 # Personal data - never commit real portfolio CSVs
 Portfolio_Positions_*.csv
+examples/fidelity_positions_real.csv
+
+# Personal files
+*.numbers
+*.pdf
+*.rtfd/
+Archive.zip

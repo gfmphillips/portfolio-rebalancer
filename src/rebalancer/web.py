@@ -106,6 +106,7 @@ _DEFAULTS = {
     "mapping_data": None,
     "result": None,
     "mapping_text": None,
+    "dismiss_welcome": False,
 }
 for key, default in _DEFAULTS.items():
     if key not in st.session_state:
@@ -379,6 +380,14 @@ with st.sidebar.expander("Advanced"):
     )
     apply_advanced = st.button("Apply YAML", key="apply_advanced")
 
+# --- Sidebar footer ---
+st.sidebar.divider()
+st.sidebar.markdown(
+    "[Share feedback or request a feature]"
+    "(https://github.com/gfmphillips/portfolio-rebalancer/issues)",
+)
+st.sidebar.caption("Built for Bogleheads. Free and open-source.")
+
 
 # ---------------------------------------------------------------------------
 # Build OutputConfig from widgets
@@ -501,6 +510,22 @@ def _load_all():
 # ---------------------------------------------------------------------------
 
 st.title("Portfolio Rebalancer")
+
+# Welcome banner for new users
+if not st.session_state.dismiss_welcome:
+    with st.container():
+        st.info(
+            "**Welcome!** This tool helps you rebalance your investment portfolio across "
+            "asset classes. Upload a Fidelity positions CSV (or use the example data) to "
+            "see your current allocation, get a step-by-step trade plan, and track "
+            "consolidation progress.\n\n"
+            "**Getting started:** The example portfolio is loaded by default --- click the "
+            "**Rebalance Analysis** tab to see it in action. To use your own data, upload "
+            "a CSV in the sidebar.",
+        )
+        if st.button("Dismiss", key="dismiss_welcome_btn"):
+            st.session_state.dismiss_welcome = True
+            st.rerun()
 
 # Tabs
 tab_overview, tab_rebalance, tab_trades, tab_consolidation = st.tabs(
