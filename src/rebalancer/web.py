@@ -1028,17 +1028,31 @@ with tab_trades:
             # Download markdown report
             st.divider()
             st.subheader("Export")
-            from rebalancer.output import write_markdown_report
+            from rebalancer.output import write_csv_report, write_markdown_report
 
             buf_path = _save_temp("", ".md")
             write_markdown_report(result, buf_path, output_config)
             md_content = buf_path.read_text()
-            st.download_button(
-                label="Download Markdown Report",
-                data=md_content,
-                file_name="rebalance_report.md",
-                mime="text/markdown",
-            )
+
+            csv_buf_path = _save_temp("", ".csv")
+            write_csv_report(result, csv_buf_path, output_config)
+            csv_content = csv_buf_path.read_text()
+
+            dl_col1, dl_col2 = st.columns(2)
+            with dl_col1:
+                st.download_button(
+                    label="Download Markdown Report",
+                    data=md_content,
+                    file_name="rebalance_report.md",
+                    mime="text/markdown",
+                )
+            with dl_col2:
+                st.download_button(
+                    label="Download CSV Report",
+                    data=csv_content,
+                    file_name="trade_plan.csv",
+                    mime="text/csv",
+                )
 
 
 # ---- Tab 4: Consolidation ----

@@ -1,3 +1,6 @@
+import csv
+import io
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -464,6 +467,86 @@ def write_markdown_report(
     lines.append("")
     path.write_text("\n".join(lines))
     console.print(f"\n[dim]Report written to {path}[/dim]")
+
+
+def _compute_term(lot_date_str: str | None) -> str:
+    """Derive 'Short-term' or 'Long-term' from a lot acquisition date string."""
+    if not lot_date_str:
+        return ""
+    try:
+        acq = datetime.strptime(lot_date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return ""
+    days_held = (date.today() - acq).days
+    return "Short-term" if days_held < 365 else "Long-term"
+
+
+def write_csv_report(
+    result: RebalanceResult, path: Path, output_config: OutputConfig | None = None
+) -> None:
+    """Write the rebalance report as a CSV file.
+
+    The CSV contains summary header rows (prefixed with ``#``) followed by a
+    trade table with one row per execution step.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+
+    # --- Summary header rows ---
+    writer.writerow(["# Portfolio Total", f"${result.total_portfolio_value:,.2f}"])
+    writer.writerow(["# Date", date.today().isoformat()])
+
+    ti = result.tax_impact
+    writer.writerow([
+        "# Tax Impact",
+        f"Gains: ${ti.estimated_total_gains:,.2f}",
+        f"Losses: ${ti.estimated_total_losses:,.2f}",
+        f"Net: ${ti.estimated_net:,.2f}",
+    ])
+
+    all_classes = sorted(
+        set(result.current_allocation.keys()) | set(result.target_allocation.keys())
+    )
+    drift_parts = []
+    for cls in all_classes:
+        current = result.current_allocation.get(cls, Decimal("0"))
+        target = result.target_allocation.get(cls, Decimal("0"))
+        drift = result.drift.get(cls, Decimal("0"))
+        drift_parts.append(f"{cls}: {current}% -> {target}% ({drift:+}%)")
+    writer.writerow(["# Allocation Drift"] + drift_parts)
+
+    # Empty separator row
+    writer.writerow([])
+
+    # --- Trade table ---
+    columns = [
+        "Step", "Phase", "Account", "Account Type", "Ticker", "Action",
+        "Shares", "Est. Value", "Est. Gain/Loss", "Lot Date", "Term",
+        "Reasoning", "Warnings",
+    ]
+    writer.writerow(columns)
+
+    if result.trades:
+        steps = build_execution_plan(result.trades)
+        for s in steps:
+            t = s.trade
+            writer.writerow([
+                s.step_num,
+                s.phase,
+                t.account_name,
+                t.account_type.value,
+                t.ticker,
+                t.action,
+                str(t.shares.quantize(Decimal("0.001"))),
+                f"${t.estimated_value:,.2f}",
+                f"${t.estimated_gain_loss:,.2f}" if t.estimated_gain_loss is not None else "",
+                t.lot_acquisition_date or "",
+                _compute_term(t.lot_acquisition_date),
+                t.reasoning,
+                "; ".join(t.warnings) if t.warnings else "",
+            ])
+
+    path.write_text(buf.getvalue())
 
 
 def print_german_tax_section(
