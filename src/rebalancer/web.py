@@ -536,12 +536,27 @@ if not st.session_state.accepted_disclaimer:
 if not st.session_state.dismiss_welcome:
     with st.container():
         st.info(
-            "**Welcome!** Upload a Fidelity positions CSV (or use the example data) to "
-            "see your current allocation, get a step-by-step trade plan, and track "
-            "consolidation progress.\n\n"
+            "**Welcome!** This tool analyzes your Fidelity portfolio and generates a "
+            "step-by-step rebalance trade plan. Upload a positions CSV or use the "
+            "example data to get started.\n\n"
+            "**Sidebar options (left panel):**\n"
+            "- **Portfolio Data** --- Upload your Fidelity CSV or use the example\n"
+            "- **Target Allocation** --- Set your desired asset class mix (must sum to 100%)\n"
+            "- **Ticker Mapping** --- Maps each ticker to an asset class. Add any tickers "
+            "from your portfolio that aren't already listed\n"
+            "- **Rebalance Settings** --- Drift thresholds and minimum trade size\n"
+            "- **Tax** --- Enable tax-aware trading, upload transaction history for wash sale "
+            "detection, or add tax lot data for lot-level selling\n"
+            "- **External Cash** --- Add bank cash (investable or emergency) to include in "
+            "the portfolio total\n\n"
             "**Getting started:** The example portfolio is loaded by default --- click the "
-            "**Rebalance Analysis** tab to see it in action. To use your own data, upload "
-            "a CSV in the sidebar.",
+            "**Rebalance Analysis** tab to see it in action.\n\n"
+            "**Privacy note:** If you upload your own data, your CSV may contain account "
+            "names and numbers. This tool runs entirely in your browser session and "
+            "**nothing is stored or transmitted**. However, if you want to be extra cautious, "
+            "you can edit your CSV before uploading to remove or replace account names "
+            "and account numbers (the tool only needs the ticker symbols, quantities, "
+            "prices, and values to work).",
         )
         if st.button("Dismiss", key="dismiss_welcome_btn"):
             st.session_state.dismiss_welcome = True
