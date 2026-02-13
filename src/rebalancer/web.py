@@ -385,7 +385,7 @@ with st.sidebar.expander("Advanced"):
 st.sidebar.divider()
 st.sidebar.markdown(
     "[Share feedback or request a feature]"
-    "(https://github.com/gfmphillips/portfolio-rebalancer/issues)",
+    "(https://forms.gle/8qMfAWQX9aiWZCo26)",
 )
 st.sidebar.caption("Built for Bogleheads. Free and open-source.")
 

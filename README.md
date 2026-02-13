@@ -62,7 +62,7 @@ Example portfolios and configurations included with this software are for demons
 
 ## Feedback
 
-Using it? Have a feature request? [Open an issue](https://github.com/gfmphillips/portfolio-rebalancer/issues) or [start a discussion](https://github.com/gfmphillips/portfolio-rebalancer/discussions).
+Using it? Have a feature request? [Share feedback](https://forms.gle/8qMfAWQX9aiWZCo26) (quick Google Form) or [open an issue](https://github.com/gfmphillips/portfolio-rebalancer/issues) on GitHub.
 
 ## License
 
