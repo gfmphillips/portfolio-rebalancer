@@ -2,7 +2,7 @@
 
 A free, open-source tool that turns your Fidelity positions export into a step-by-step rebalance trade plan.
 
-**[Try it live](https://portfolio-rebalancer.streamlit.app)** (no login, no data stored)
+**[Try it live](https://portfolio-rebalancer-for-americans.streamlit.app)** (no login, no data stored)
 
 <!-- TODO: Add screenshot once deployed -->
 <!-- ![Screenshot](docs/screenshot.png) -->
