@@ -23,6 +23,9 @@ Thumbs.db
 # Personal data - never commit real portfolio CSVs
 Portfolio_Positions_*.csv
 examples/fidelity_positions_real.csv
+tests/fixtures/fidelity_paste_real.txt
+tests/fixtures/fidelity_transactions_real.csv
+tests/test_golden_real_fidelity.py
 
 # Personal files
 *.numbers
