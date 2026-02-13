@@ -107,6 +107,7 @@ _DEFAULTS = {
     "result": None,
     "mapping_text": None,
     "dismiss_welcome": False,
+    "accepted_disclaimer": False,
 }
 for key, default in _DEFAULTS.items():
     if key not in st.session_state:
@@ -511,12 +512,31 @@ def _load_all():
 
 st.title("Portfolio Rebalancer")
 
+# Disclaimer gate on first use
+if not st.session_state.accepted_disclaimer:
+    st.warning(
+        "**Disclaimer:** This tool is for informational and educational purposes only. "
+        "It does not constitute investment, financial, or tax advice. The developers are "
+        "not registered investment advisors. All investments carry risk, including loss of "
+        "principal. You are solely responsible for your investment decisions. "
+        "See the full [disclaimer](https://github.com/gfmphillips/portfolio-rebalancer/blob/main/DISCLAIMER) "
+        "for details."
+    )
+    accepted = st.checkbox(
+        "I understand this tool does not provide financial advice and I accept all risks",
+        key="disclaimer_checkbox",
+    )
+    if accepted:
+        st.session_state.accepted_disclaimer = True
+        st.rerun()
+    else:
+        st.stop()
+
 # Welcome banner for new users
 if not st.session_state.dismiss_welcome:
     with st.container():
         st.info(
-            "**Welcome!** This tool helps you rebalance your investment portfolio across "
-            "asset classes. Upload a Fidelity positions CSV (or use the example data) to "
+            "**Welcome!** Upload a Fidelity positions CSV (or use the example data) to "
             "see your current allocation, get a step-by-step trade plan, and track "
             "consolidation progress.\n\n"
             "**Getting started:** The example portfolio is loaded by default --- click the "

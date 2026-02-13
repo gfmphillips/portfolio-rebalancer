@@ -48,6 +48,18 @@ uv run rebalancer run \
 
 Your data never leaves your browser (on Streamlit Cloud) or your machine (local). Nothing is stored.
 
+## Privacy
+
+- **No accounts, no login.** The app runs statelessly in your browser session.
+- **No data stored.** Your portfolio data is not saved, transmitted, or accessible to anyone.
+- **One external call:** If "Fetch live EUR/USD rate" is enabled, the app requests the current exchange rate from the [Frankfurter API](https://www.frankfurter.app). No portfolio data is included in this request.
+
+## Disclaimer
+
+This tool is for **informational and educational purposes only**. It is not investment advice, financial advice, or tax advice. The developers are not registered investment advisors. You are solely responsible for your own investment decisions. See the full [DISCLAIMER](DISCLAIMER) for details.
+
+Example portfolios and configurations included with this software are for demonstration purposes only and are not investment recommendations.
+
 ## Feedback
 
 Using it? Have a feature request? [Open an issue](https://github.com/gfmphillips/portfolio-rebalancer/issues) or [start a discussion](https://github.com/gfmphillips/portfolio-rebalancer/discussions).
