@@ -421,6 +421,7 @@ def _load_all():
 
     # Account mappings
     account_mappings: dict[str, AccountType] = {}
+    acct_map_errors: list[str] = []
     try:
         parsed_acct = yaml.safe_load(acct_yaml)
         if isinstance(parsed_acct, dict):
@@ -428,8 +429,13 @@ def _load_all():
             for substr, acct_type_str in parsed_acct.items():
                 if acct_type_str in valid_types:
                     account_mappings[substr] = AccountType(acct_type_str)
-    except Exception:
-        pass
+                else:
+                    acct_map_errors.append(
+                        f"Unknown account type '{acct_type_str}' for '{substr}'. "
+                        f"Valid types: {', '.join(sorted(valid_types))}"
+                    )
+    except Exception as e:
+        acct_map_errors.append(f"Failed to parse account type mappings: {e}")
 
     config = RebalanceConfig(
         threshold_pct=Decimal(str(threshold_pct)),
@@ -463,28 +469,31 @@ def _load_all():
 
     # Parse transaction history if uploaded
     recent_transactions = None
+    txn_errors: list[str] = []
     if txn_path is not None:
         try:
             recent_transactions = parse_transactions(txn_path)
-        except Exception:
-            pass  # silently skip bad transaction files
+        except Exception as e:
+            txn_errors.append(f"Failed to parse transaction history CSV: {e}")
 
     # Parse and attach tax lots (CSV upload takes priority over paste)
     lot_warnings: list[str] = []
+    lot_errors: list[str] = []
     if lots_path is not None:
         try:
             lots_data = parse_lots(lots_path)
             lot_warnings = attach_lots(positions, lots_data)
-        except Exception:
-            pass  # silently skip bad lot files
+        except Exception as e:
+            lot_errors.append(f"Failed to parse tax lot CSV: {e}")
     elif fidelity_lots_paste and fidelity_lots_paste.strip():
         try:
             lots_data = parse_fidelity_lots_paste(fidelity_lots_paste)
             lot_warnings = attach_lots(positions, lots_data)
-        except Exception:
-            pass  # silently skip bad paste data
+        except Exception as e:
+            lot_errors.append(f"Failed to parse pasted Fidelity lot data: {e}")
 
-    return positions, targets, mapping, config, output_config, bank_positions, recent_transactions, lot_warnings
+    all_errors = acct_map_errors + txn_errors + lot_errors
+    return positions, targets, mapping, config, output_config, bank_positions, recent_transactions, lot_warnings, all_errors
 
 
 # ---------------------------------------------------------------------------
@@ -500,13 +509,18 @@ tab_overview, tab_rebalance, tab_trades, tab_consolidation = st.tabs(
 
 # Try to load data
 try:
-    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings = _load_all()
+    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings, lot_errors = _load_all()
     all_positions = positions + bank_positions
     data_ok = True
 except Exception as e:
     data_ok = False
     data_error = str(e)
     lot_warnings = []
+    lot_errors = []
+
+if data_ok and lot_errors:
+    for err in lot_errors:
+        st.error(err)
 
 # ---- Tab 1: Portfolio Overview ----
 with tab_overview:
