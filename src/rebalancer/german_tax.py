@@ -6,30 +6,24 @@ not modify the rebalance engine.
 """
 
 from decimal import Decimal
+from typing import TypedDict
 
 from .models import (
-    AccountType,
+    HUNDRED,
+    ZERO,
     GermanFundCategory,
     GermanTaxAnnotation,
     GermanTaxConfig,
+    TAX_ADVANTAGED,
     TickerMapping,
     Trade,
 )
-
-# Tax-advantaged account types (not subject to German tax per DBA Art. 18A)
-_TAX_ADVANTAGED = {
-    AccountType.TRADITIONAL_IRA,
-    AccountType.ROTH_IRA,
-    AccountType.ROTH_401K,
-    AccountType.FOUR_01K,
-    AccountType.HSA,
-}
 
 _TEILFREISTELLUNG: dict[GermanFundCategory, Decimal] = {
     GermanFundCategory.AKTIENFONDS: Decimal("30"),
     GermanFundCategory.MISCHFONDS: Decimal("15"),
     GermanFundCategory.IMMOBILIENFONDS: Decimal("60"),
-    GermanFundCategory.OTHER: Decimal("0"),
+    GermanFundCategory.OTHER: ZERO,
 }
 
 _ABGELTUNGSTEUER = Decimal("26.375")  # 25% + 5.5% Soli
@@ -58,8 +52,8 @@ def check_pfic_risk(domicile: str) -> bool:
 
 def _effective_tax_rate(teilfreistellung_pct: Decimal) -> Decimal:
     """Compute effective German tax rate after Teilfreistellung."""
-    taxable_fraction = Decimal("100") - teilfreistellung_pct
-    return (_ABGELTUNGSTEUER * taxable_fraction / Decimal("100")).quantize(
+    taxable_fraction = HUNDRED - teilfreistellung_pct
+    return (_ABGELTUNGSTEUER * taxable_fraction / HUNDRED).quantize(
         Decimal("0.01")
     )
 
@@ -81,7 +75,7 @@ def annotate_trades(
     seen: set[str] = set()
     taxable_tickers: list[str] = []
     for t in trades:
-        if t.account_type in _TAX_ADVANTAGED:
+        if t.account_type in TAX_ADVANTAGED:
             continue
         if t.ticker not in seen:
             seen.add(t.ticker)
@@ -149,10 +143,17 @@ def annotate_trades(
     return annotations
 
 
+class GermanTaxSummary(TypedDict):
+    sparerpauschbetrag_eur: int
+    pfic_risk_count: int
+    categories_in_play: list[str]
+    total_annotated: int
+
+
 def generate_summary(
     annotations: list[GermanTaxAnnotation],
     filing_status: str,
-) -> dict:
+) -> GermanTaxSummary:
     """Generate a summary dict of German tax advisory information."""
     sparerpauschbetrag = 2000 if filing_status == "married" else 1000
 

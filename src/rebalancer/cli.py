@@ -105,17 +105,20 @@ def run(
     # Auto-detect unified vs legacy config format
     from decimal import Decimal
 
-    output_config = OutputConfig()
-    german_tax_config = GermanTaxConfig()
     from .models import ConstraintsConfig
 
+    output_config = OutputConfig()
+    german_tax_config = GermanTaxConfig()
     cash_config_fx = Decimal("1.10")
     constraints_config = ConstraintsConfig()
     if is_unified_config(cfg_path):
-        targets_data, config_data, output_config, cash_config, german_tax_config, constraints_config = _safe_load(
-            "unified config YAML", load_unified_config, cfg_path
-        )
-        cash_config_fx = cash_config.eurusd_fx
+        uc = _safe_load("unified config YAML", load_unified_config, cfg_path)
+        targets_data = uc.targets
+        config_data = uc.rebalance_config
+        output_config = uc.output_config
+        german_tax_config = uc.german_tax_config
+        constraints_config = uc.constraints_config
+        cash_config_fx = uc.cash_config.eurusd_fx
     else:
         # Legacy format requires --targets
         if targets is None:

@@ -9,10 +9,11 @@ import streamlit as st
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
-from rebalancer.engine import TAX_ADVANTAGED, CashPools, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, rebalance
+from rebalancer.engine import CashPools, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, rebalance
 from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
 from rebalancer.german_tax import annotate_trades, generate_summary
 from rebalancer.models import (
+    TAX_ADVANTAGED,
     AccountType,
     AllocationTarget,
     CashCategory,
@@ -27,6 +28,7 @@ from rebalancer.models import (
 )
 from rebalancer.output import (
     _compute_allocation,
+    _format_currency,
     build_execution_plan,
     filter_actionable_trades,
     sort_trades,
@@ -82,12 +84,6 @@ def _load_example_text(name: str) -> str:
 def _dec(val: Decimal) -> float:
     """Convert Decimal to float for display."""
     return float(val)
-
-
-def _format_money(val: Decimal, precision: int = 0) -> str:
-    if precision == 0:
-        return f"${_dec(val):,.0f}"
-    return f"${_dec(val):,.{precision}f}"
 
 
 def _save_temp(content: str, suffix: str) -> Path:
@@ -407,31 +403,24 @@ cur_prec = output_config.precision.currency
 # ---------------------------------------------------------------------------
 
 
-def _load_all():
-    """Parse all inputs and return (positions, targets, mapping, config, output_config, bank_positions, recent_transactions)."""
-    if csv_path is None:
-        raise ValueError("No positions CSV provided. Upload a file or check 'Use example CSV'.")
-
-    positions = parse_fidelity_csv(csv_path)
-    if not positions:
-        raise ValueError("No positions found in CSV. Check the file format.")
-
-    # Targets from widget values
+def _build_targets() -> list[AllocationTarget]:
+    """Build target allocation list from sidebar widget values."""
     if alloc_sum != 100:
         raise ValueError(f"Target allocations must sum to 100, got {alloc_sum}")
-    targets = [
+    return [
         AllocationTarget(asset_class=ac, target_pct=Decimal(str(alloc_values[ac])))
         for ac in ASSET_CLASSES
         if alloc_values[ac] > 0
     ]
 
-    # Mapping
-    map_path = _save_temp(mapping_text, ".yaml")
-    mapping = load_mapping(map_path)
 
-    # Account mappings
+def _build_config() -> tuple[RebalanceConfig, list[str]]:
+    """Build RebalanceConfig from sidebar widgets, including account mappings.
+
+    Returns (config, errors).
+    """
     account_mappings: dict[str, AccountType] = {}
-    acct_map_errors: list[str] = []
+    errors: list[str] = []
     try:
         parsed_acct = yaml.safe_load(acct_yaml)
         if isinstance(parsed_acct, dict):
@@ -440,12 +429,12 @@ def _load_all():
                 if acct_type_str in valid_types:
                     account_mappings[substr] = AccountType(acct_type_str)
                 else:
-                    acct_map_errors.append(
+                    errors.append(
                         f"Unknown account type '{acct_type_str}' for '{substr}'. "
                         f"Valid types: {', '.join(sorted(valid_types))}"
                     )
     except Exception as e:
-        acct_map_errors.append(f"Failed to parse account type mappings: {e}")
+        errors.append(f"Failed to parse account type mappings: {e}")
 
     config = RebalanceConfig(
         threshold_pct=Decimal(str(threshold_pct)),
@@ -456,6 +445,47 @@ def _load_all():
         cash_to_invest=Decimal("0"),
         account_mappings=account_mappings,
     )
+    return config, errors
+
+
+def _parse_lots_data(positions: list[Position]) -> tuple[list[str], list[str]]:
+    """Parse and attach tax lots from CSV upload or Fidelity paste.
+
+    Returns (lot_warnings, lot_errors).
+    """
+    lot_warnings: list[str] = []
+    lot_errors: list[str] = []
+    if lots_path is not None:
+        try:
+            lots_data = parse_lots(lots_path)
+            lot_warnings = attach_lots(positions, lots_data)
+        except Exception as e:
+            lot_errors.append(f"Failed to parse tax lot CSV: {e}")
+    elif fidelity_lots_paste and fidelity_lots_paste.strip():
+        try:
+            lots_data = parse_fidelity_lots_paste(fidelity_lots_paste)
+            lot_warnings = attach_lots(positions, lots_data)
+        except Exception as e:
+            lot_errors.append(f"Failed to parse pasted Fidelity lot data: {e}")
+    return lot_warnings, lot_errors
+
+
+def _load_all():
+    """Parse all inputs and return (positions, targets, mapping, config, output_config, bank_positions, recent_transactions)."""
+    if csv_path is None:
+        raise ValueError("No positions CSV provided. Upload a file or check 'Use example CSV'.")
+
+    positions = parse_fidelity_csv(csv_path)
+    if not positions:
+        raise ValueError("No positions found in CSV. Check the file format.")
+
+    targets = _build_targets()
+
+    # Mapping
+    map_path = _save_temp(mapping_text, ".yaml")
+    mapping = load_mapping(map_path)
+
+    config, acct_map_errors = _build_config()
 
     # Build bank cash positions using new CashConfig
     eur_usd_rate = Decimal(str(manual_fx))
@@ -486,21 +516,7 @@ def _load_all():
         except Exception as e:
             txn_errors.append(f"Failed to parse transaction history CSV: {e}")
 
-    # Parse and attach tax lots (CSV upload takes priority over paste)
-    lot_warnings: list[str] = []
-    lot_errors: list[str] = []
-    if lots_path is not None:
-        try:
-            lots_data = parse_lots(lots_path)
-            lot_warnings = attach_lots(positions, lots_data)
-        except Exception as e:
-            lot_errors.append(f"Failed to parse tax lot CSV: {e}")
-    elif fidelity_lots_paste and fidelity_lots_paste.strip():
-        try:
-            lots_data = parse_fidelity_lots_paste(fidelity_lots_paste)
-            lot_warnings = attach_lots(positions, lots_data)
-        except Exception as e:
-            lot_errors.append(f"Failed to parse pasted Fidelity lot data: {e}")
+    lot_warnings, lot_errors = _parse_lots_data(positions)
 
     all_errors = acct_map_errors + txn_errors + lot_errors
     return positions, targets, mapping, config, output_config, bank_positions, recent_transactions, lot_warnings, all_errors
@@ -593,7 +609,7 @@ with tab_overview:
 
         # KPI row
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Portfolio Value", _format_money(total_value, cur_prec),
+        col1.metric("Total Portfolio Value", _format_currency(total_value, cur_prec),
                      help="Sum of all position market values across all accounts, including bank cash if enabled. This is the denominator used to calculate allocation percentages.")
         col2.metric("Accounts", len({p.account_name for p in all_positions}),
                      help="Number of distinct brokerage accounts detected in the CSV. Each account has a tax type (taxable, Roth, IRA, etc.) that affects trade priority.")
@@ -644,10 +660,10 @@ with tab_overview:
                     "Ticker": p.ticker,
                     "Description": p.description,
                     "Shares": f"{_dec(p.quantity):,.3f}" if p.quantity else "-",
-                    "Price": _format_money(p.price, cur_prec) if p.price else "-",
-                    "Value": _format_money(p.market_value, cur_prec),
-                    "Cost Basis": _format_money(p.cost_basis_total, cur_prec) if p.cost_basis_total is not None else "-",
-                    "Gain/Loss": _format_money(gain_loss, cur_prec) if gain_loss is not None else "-",
+                    "Price": _format_currency(p.price, cur_prec) if p.price else "-",
+                    "Value": _format_currency(p.market_value, cur_prec),
+                    "Cost Basis": _format_currency(p.cost_basis_total, cur_prec) if p.cost_basis_total is not None else "-",
+                    "Gain/Loss": _format_currency(gain_loss, cur_prec) if gain_loss is not None else "-",
                     "Asset Class": asset_class,
                 }
             )
@@ -666,7 +682,7 @@ with tab_overview:
                         "Category": category,
                         "Currency": "EUR",
                         "Original Amount": f"\u20ac{_dec(bp.quantity):,.2f}",
-                        "USD Value": _format_money(bp.market_value, cur_prec),
+                        "USD Value": _format_currency(bp.market_value, cur_prec),
                         "Note": "Excluded from rebalancing" if is_emergency else "Counted in allocation",
                     })
                 else:
@@ -674,7 +690,7 @@ with tab_overview:
                         "Category": category,
                         "Currency": "USD",
                         "Original Amount": f"${_dec(bp.quantity):,.2f}",
-                        "USD Value": _format_money(bp.market_value, cur_prec),
+                        "USD Value": _format_currency(bp.market_value, cur_prec),
                         "Note": "Excluded from rebalancing" if is_emergency else "Counted in allocation",
                     })
             st.dataframe(cash_rows, width="stretch", hide_index=True)
@@ -777,7 +793,7 @@ with tab_rebalance:
         cash_positions = [p for p in all_positions if mapping.get(p.ticker) and mapping[p.ticker].asset_class == "cash"]
         total_cash = sum(_dec(p.market_value) for p in cash_positions)
         if total_cash > 0:
-            st.markdown(f"Idle cash available: **{_format_money(Decimal(str(total_cash)), cur_prec)}** across {len(cash_positions)} account(s)")
+            st.markdown(f"Idle cash available: **{_format_currency(Decimal(str(total_cash)), cur_prec)}** across {len(cash_positions)} account(s)")
 
         # Trade breakdown by account type
         if result.trades:
@@ -791,7 +807,7 @@ with tab_rebalance:
                 taxable_sells = [t for t in taxable_trades if t.action == "SELL" and t.estimated_gain_loss is not None]
                 net_gain = sum(_dec(t.estimated_gain_loss) for t in taxable_sells)
                 if net_gain > 0:
-                    st.warning(f"Taxable sells have estimated net gain of {_format_money(Decimal(str(net_gain)), cur_prec)}")
+                    st.warning(f"Taxable sells have estimated net gain of {_format_currency(Decimal(str(net_gain)), cur_prec)}")
 
         # Stacked bar: current vs target
         fig4 = go.Figure()
@@ -824,15 +840,15 @@ with tab_rebalance:
             if ti.taxable_trades_count > 0:
                 st.subheader("Estimated Tax Impact (Taxable Accounts)")
                 ti_col1, ti_col2, ti_col3 = st.columns(3)
-                ti_col1.metric("Estimated Gains", _format_money(ti.estimated_total_gains, cur_prec),
+                ti_col1.metric("Estimated Gains", _format_currency(ti.estimated_total_gains, cur_prec),
                                help="Total estimated capital gains from sells in taxable accounts. Computed as (market value - cost basis) x shares sold. Retirement account sells are excluded since they have no tax impact.")
-                ti_col2.metric("Estimated Losses", _format_money(ti.estimated_total_losses, cur_prec),
+                ti_col2.metric("Estimated Losses", _format_currency(ti.estimated_total_losses, cur_prec),
                                help="Total estimated capital losses from sells in taxable accounts. Losses can offset gains and reduce your tax bill. Up to $3,000 of net losses can offset ordinary income per year.")
                 net_delta = "positive" if ti.estimated_net > 0 else "negative" if ti.estimated_net < 0 else None
                 ti_col3.metric(
                     "Net",
-                    _format_money(ti.estimated_net, cur_prec),
-                    delta=f"{_format_money(ti.estimated_net, cur_prec)} taxable" if ti.estimated_net != 0 else None,
+                    _format_currency(ti.estimated_net, cur_prec),
+                    delta=f"{_format_currency(ti.estimated_net, cur_prec)} taxable" if ti.estimated_net != 0 else None,
                     delta_color="inverse",
                     help="Gains minus losses. Positive = you owe taxes on this amount. Negative = you have a tax-loss harvesting benefit.",
                 )
@@ -871,13 +887,13 @@ with tab_trades:
             # --- Header ---
             st.subheader(f"Execution Plan ({len(steps)} steps)")
             if hidden_count > 0:
-                st.caption(f"{hidden_count} small trades hidden (below {_format_money(Decimal(str(min_trade_value)), cur_prec)} threshold)")
+                st.caption(f"{hidden_count} small trades hidden (below {_format_currency(Decimal(str(min_trade_value)), cur_prec)} threshold)")
 
             # --- Summary metrics ---
             m1, m2, m3 = st.columns(3)
-            m1.metric("Sell first", f"{len(sell_steps)} trades", f"frees {_format_money(total_sell, cur_prec)}",
+            m1.metric("Sell first", f"{len(sell_steps)} trades", f"frees {_format_currency(total_sell, cur_prec)}",
                        help="Sells are executed first to free up cash. The tool prioritizes selling in retirement accounts (no tax) before taxable accounts, and prefers selling positions at a loss (tax-loss harvesting) over positions at a gain.")
-            m2.metric("Then buy", f"{len(buy_steps)} trades", f"costs {_format_money(total_buy, cur_prec)}",
+            m2.metric("Then buy", f"{len(buy_steps)} trades", f"costs {_format_currency(total_buy, cur_prec)}",
                        help="Buys use cash freed from sells plus any existing idle cash. Each tax-advantaged account can only buy with its own cash (no transfers between IRAs). Taxable accounts share a single cash pool.")
             m3.metric("Total steps", len(steps),
                        help="Total number of individual trades to execute. Steps are ordered: all sells first (grouped by account), then all buys (grouped by account).")
@@ -903,7 +919,7 @@ with tab_trades:
             def _format_pool_state(acct_name: str, acct_type: AccountType) -> str:
                 label = _pool_label(acct_name, acct_type)
                 bal = _pool_balance(acct_name, acct_type)
-                return f"{label}: {_format_money(bal, cur_prec)}"
+                return f"{label}: {_format_currency(bal, cur_prec)}"
 
             # --- Starting cash summary ---
             st.divider()
@@ -918,7 +934,7 @@ with tab_trades:
                                         and p.market_value > 0})
                 pool_rows.append({
                     "Pool": "Taxable (shared)",
-                    "Starting Cash": _format_money(pools.taxable_pool, cur_prec),
+                    "Starting Cash": _format_currency(pools.taxable_pool, cur_prec),
                     "Accounts": ", ".join(taxable_accts) if taxable_accts else "-",
                     "Note": "Cash moves freely between taxable accounts",
                 })
@@ -926,7 +942,7 @@ with tab_trades:
                 if bal > 0:
                     pool_rows.append({
                         "Pool": acct_name,
-                        "Starting Cash": _format_money(bal, cur_prec),
+                        "Starting Cash": _format_currency(bal, cur_prec),
                         "Accounts": acct_name,
                         "Note": "Isolated — can only buy within this account",
                     })
@@ -950,7 +966,7 @@ with tab_trades:
                         acct_total = sum(x.trade.estimated_value for x in acct_sells)
                         st.markdown(
                             f"**{current_account}** ({t.account_type.value}) "
-                            f"--- {len(acct_sells)} trade(s), {_format_money(acct_total, cur_prec)} total"
+                            f"--- {len(acct_sells)} trade(s), {_format_currency(acct_total, cur_prec)} total"
                         )
 
                     # Credit proceeds to pool
@@ -964,20 +980,20 @@ with tab_trades:
                         if t.estimated_gain_loss is not None:
                             gl = t.estimated_gain_loss
                             if gl > 0:
-                                gain_loss_str = f" | Est. gain: {_format_money(gl, cur_prec)}"
+                                gain_loss_str = f" | Est. gain: {_format_currency(gl, cur_prec)}"
                             elif gl < 0:
-                                gain_loss_str = f" | Est. loss: {_format_money(gl, cur_prec)}"
+                                gain_loss_str = f" | Est. loss: {_format_currency(gl, cur_prec)}"
                         st.markdown(
                             f"SELL **{t.ticker}** --- "
                             f"**{_dec(t.shares):.3f}** shares --- "
-                            f"**{_format_money(t.estimated_value, cur_prec)}**{gain_loss_str}"
+                            f"**{_format_currency(t.estimated_value, cur_prec)}**{gain_loss_str}"
                         )
                         pool_label = _pool_label(t.account_name, t.account_type)
                         pool_bal = _pool_balance(t.account_name, t.account_type)
                         st.caption(
                             f"{t.reasoning} | "
-                            f"+{_format_money(t.estimated_value, cur_prec)} to **{pool_label}** "
-                            f"(now {_format_money(pool_bal, cur_prec)})"
+                            f"+{_format_currency(t.estimated_value, cur_prec)} to **{pool_label}** "
+                            f"(now {_format_currency(pool_bal, cur_prec)})"
                         )
                         for w in t.warnings:
                             st.warning(w)
@@ -998,8 +1014,8 @@ with tab_trades:
                         pool_before = _pool_balance(t.account_name, t.account_type)
                         st.markdown(
                             f"**{current_account}** ({t.account_type.value}) "
-                            f"--- {len(acct_buys)} trade(s), {_format_money(acct_total, cur_prec)} total "
-                            f"--- {_format_money(pool_before, cur_prec)} available in pool"
+                            f"--- {len(acct_buys)} trade(s), {_format_currency(acct_total, cur_prec)} total "
+                            f"--- {_format_currency(pool_before, cur_prec)} available in pool"
                         )
 
                     # Spend from pool
@@ -1014,12 +1030,12 @@ with tab_trades:
                         st.markdown(
                             f"BUY **{t.ticker}** --- "
                             f"**{_dec(t.shares):.3f}** shares --- "
-                            f"**{_format_money(t.estimated_value, cur_prec)}**"
+                            f"**{_format_currency(t.estimated_value, cur_prec)}**"
                         )
                         st.caption(
                             f"{t.reasoning} | "
-                            f"-{_format_money(t.estimated_value, cur_prec)} from **{pool_label}** "
-                            f"(now {_format_money(pool_bal, cur_prec)})"
+                            f"-{_format_currency(t.estimated_value, cur_prec)} from **{pool_label}** "
+                            f"(now {_format_currency(pool_bal, cur_prec)})"
                         )
 
             # --- Trade breakdown chart ---
@@ -1142,13 +1158,13 @@ with tab_consolidation:
         col1, col2 = st.columns(2)
         col1.metric(
             "End-State Funds",
-            _format_money(consolidation.end_state_value, cur_prec),
+            _format_currency(consolidation.end_state_value, cur_prec),
             f"{consolidation.end_state_pct}%",
             help="Value held in funds marked 'preferred: true' in the mapping (e.g. VTI, VXUS, BND). These are your target holdings. The goal is to get this to 100%.",
         )
         col2.metric(
             "Legacy Funds",
-            _format_money(consolidation.legacy_value, cur_prec),
+            _format_currency(consolidation.legacy_value, cur_prec),
             f"{consolidation.legacy_pct}%",
             help="Value held in all other non-cash funds. These have a 'consolidate_to' target in the mapping. Consolidate them over time as tax-efficient opportunities arise.",
         )
@@ -1172,11 +1188,11 @@ with tab_consolidation:
                 st.caption("These positions can be consolidated now with no tax cost. Retirement accounts have no tax on sells. Taxable positions at a loss generate a tax benefit when sold.")
                 safe_rows = []
                 for opp in safe_opps:
-                    gl_str = _format_money(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
+                    gl_str = _format_currency(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
                     safe_rows.append({
                         "Ticker": opp.ticker,
                         "Account": opp.account_name,
-                        "Value": _format_money(opp.market_value, cur_prec),
+                        "Value": _format_currency(opp.market_value, cur_prec),
                         "Consolidate To": opp.consolidate_to,
                         "Gain/Loss": gl_str,
                         "Reason": opp.reason,
@@ -1188,11 +1204,11 @@ with tab_consolidation:
                 st.caption("These positions are at a gain in taxable accounts. Selling would trigger capital gains tax. Wait for a market dip (position goes to a loss) or a spending need where you'd sell anyway.")
                 wait_rows = []
                 for opp in wait_opps:
-                    gl_str = _format_money(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
+                    gl_str = _format_currency(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
                     wait_rows.append({
                         "Ticker": opp.ticker,
                         "Account": opp.account_name,
-                        "Value": _format_money(opp.market_value, cur_prec),
+                        "Value": _format_currency(opp.market_value, cur_prec),
                         "Consolidate To": opp.consolidate_to,
                         "Gain/Loss": gl_str,
                         "Reason": opp.reason,

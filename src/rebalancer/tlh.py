@@ -3,14 +3,6 @@ from decimal import Decimal
 
 from .models import AccountType, Position, TickerMapping, Trade, Transaction
 
-TAX_ADVANTAGED = {
-    AccountType.TRADITIONAL_IRA,
-    AccountType.ROTH_IRA,
-    AccountType.ROTH_401K,
-    AccountType.FOUR_01K,
-    AccountType.HSA,
-}
-
 
 def find_tlh_opportunities(
     positions: list[Position],
