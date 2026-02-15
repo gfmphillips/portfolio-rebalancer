@@ -48,6 +48,22 @@ def _detect_account_type(
     return AccountType.TAXABLE
 
 
+def _get_field(row: list[str], header_indices: dict[str, int], col_name: str) -> str:
+    """Get a field value from a CSV row by column name."""
+    idx = header_indices.get(col_name)
+    if idx is not None and idx < len(row):
+        return row[idx].strip()
+    return ""
+
+
+def _get_field_lower(row: list[str], header_indices: dict[str, int], col_name: str) -> str:
+    """Get a field value from a CSV row by lowercase column name."""
+    idx = header_indices.get(col_name.lower())
+    if idx is not None and idx < len(row):
+        return row[idx].strip()
+    return ""
+
+
 def _is_account_header(row: list[str]) -> bool:
     """Check if a CSV row is an account header (account name, rest mostly empty)."""
     if not row or not row[0].strip():
@@ -140,12 +156,6 @@ def parse_fidelity_csv(
             if not header_indices:
                 continue
 
-            def _get(col_name: str) -> str:
-                idx = header_indices.get(col_name)
-                if idx is not None and idx < len(row):
-                    return row[idx].strip()
-                return ""
-
             # For header_account format, handle account header and footer rows
             if csv_format == "header_account":
                 if _is_account_header(row):
@@ -158,29 +168,29 @@ def parse_fidelity_csv(
                     continue
 
             # Get symbol — skip rows without one
-            symbol_raw = _get("Symbol")
+            symbol_raw = _get_field(row, header_indices, "Symbol")
             if not symbol_raw:
                 continue
 
             ticker = _normalize_symbol(symbol_raw)
             if ticker.lower() in ("pending activity",):
                 continue
-            description = _get("Description")
+            description = _get_field(row, header_indices, "Description")
 
             # Determine account name and type
             if csv_format == "per_row_account":
-                account_name = _get("Account Name")
+                account_name = _get_field(row, header_indices, "Account Name")
                 if not account_name:
-                    account_name = _get("Account Number") or "Unknown Account"
+                    account_name = _get_field(row, header_indices, "Account Number") or "Unknown Account"
                 account_type = _detect_account_type(account_name, account_mappings)
             else:
                 account_name = current_account or "Unknown Account"
                 account_type = current_account_type
 
-            quantity = _safe_decimal(_get("Quantity"))
-            price = _safe_decimal(_get("Last Price"))
-            market_value = _safe_decimal(_get("Current Value"))
-            cost_basis = _safe_decimal_or_none(_get("Cost Basis Total"))
+            quantity = _safe_decimal(_get_field(row, header_indices, "Quantity"))
+            price = _safe_decimal(_get_field(row, header_indices, "Last Price"))
+            market_value = _safe_decimal(_get_field(row, header_indices, "Current Value"))
+            cost_basis = _safe_decimal_or_none(_get_field(row, header_indices, "Cost Basis Total"))
 
             positions.append(
                 Position(
@@ -260,29 +270,23 @@ def parse_transactions(path: Path) -> list[Transaction]:
         if csv_format is None:
             raise ValueError("Could not find a valid header row in transaction CSV.")
 
-        def _get(col_name: str) -> str:
-            idx = header_indices.get(col_name.lower())
-            if idx is not None and idx < len(row):
-                return row[idx].strip()
-            return ""
-
         for row in reader:
             if not row or all(cell.strip() == "" for cell in row):
                 continue
 
             if csv_format == "simplified":
-                date = _get("date")
-                account = _get("account")
-                ticker = _normalize_symbol(_get("ticker"))
-                action_raw = _get("action")
-                shares_raw = _get("shares")
+                date = _get_field_lower(row, header_indices, "date")
+                account = _get_field_lower(row, header_indices, "account")
+                ticker = _normalize_symbol(_get_field_lower(row, header_indices, "ticker"))
+                action_raw = _get_field_lower(row, header_indices, "action")
+                shares_raw = _get_field_lower(row, header_indices, "shares")
             else:
                 # Fidelity format
-                date = _get("run date") or _get("date")
-                account = _get("account")
-                ticker = _normalize_symbol(_get("symbol"))
-                action_raw = _get("action")
-                shares_raw = _get("quantity")
+                date = _get_field_lower(row, header_indices, "run date") or _get_field_lower(row, header_indices, "date")
+                account = _get_field_lower(row, header_indices, "account")
+                ticker = _normalize_symbol(_get_field_lower(row, header_indices, "symbol"))
+                action_raw = _get_field_lower(row, header_indices, "action")
+                shares_raw = _get_field_lower(row, header_indices, "quantity")
 
             if not ticker or not action_raw:
                 continue
@@ -342,21 +346,15 @@ def parse_lots(path: Path) -> dict[tuple[str, str], list[TaxLot]]:
                 "Expected: Account,Ticker,AcquisitionDate,Shares,CostBasisPerShare"
             )
 
-        def _get(col_name: str) -> str:
-            idx = header_indices.get(col_name.lower())
-            if idx is not None and idx < len(row):
-                return row[idx].strip()
-            return ""
-
         for row in reader:
             if not row or all(cell.strip() == "" for cell in row):
                 continue
 
-            account = _get("account")
-            ticker = _normalize_symbol(_get("ticker"))
-            acq_date = _get("acquisitiondate")
-            shares_raw = _get("shares")
-            cost_raw = _get("costbasispershare")
+            account = _get_field_lower(row, header_indices, "account")
+            ticker = _normalize_symbol(_get_field_lower(row, header_indices, "ticker"))
+            acq_date = _get_field_lower(row, header_indices, "acquisitiondate")
+            shares_raw = _get_field_lower(row, header_indices, "shares")
+            cost_raw = _get_field_lower(row, header_indices, "costbasispershare")
 
             if not ticker or not shares_raw:
                 continue

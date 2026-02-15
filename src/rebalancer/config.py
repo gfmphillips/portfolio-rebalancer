@@ -1,11 +1,12 @@
+import warnings
 from decimal import Decimal
 from pathlib import Path
 
 import yaml
 
-import warnings
-
 from .models import (
+    HUNDRED,
+    ZERO,
     AccountType,
     AllocationTarget,
     CashCategory,
@@ -17,6 +18,7 @@ from .models import (
     RebalanceConfig,
     SortKey,
     TickerMapping,
+    UnifiedConfig,
 )
 
 
@@ -32,7 +34,7 @@ def load_targets(path: Path) -> list[AllocationTarget]:
         )
 
     total = sum(t.target_pct for t in targets)
-    if total != Decimal("100"):
+    if total != HUNDRED:
         raise ValueError(f"Target allocations must sum to 100, got {total}")
 
     return targets
@@ -99,8 +101,8 @@ def is_unified_config(path: Path) -> bool:
 
 def load_unified_config(
     path: Path,
-) -> tuple[list[AllocationTarget], RebalanceConfig, OutputConfig, CashConfig, GermanTaxConfig, ConstraintsConfig]:
-    """Parse a unified config YAML and return (targets, config, output_config, cash_config, german_tax_config)."""
+) -> UnifiedConfig:
+    """Parse a unified config YAML and return a UnifiedConfig."""
     with open(path) as f:
         data = yaml.safe_load(f)
 
@@ -112,7 +114,7 @@ def load_unified_config(
             AllocationTarget(asset_class=asset_class, target_pct=Decimal(str(pct)))
         )
     total = sum(t.target_pct for t in targets)
-    if total != Decimal("100"):
+    if total != HUNDRED:
         raise ValueError(f"Target allocations must sum to 100, got {total}")
 
     # --- rebalance → threshold_pct, min_trade_value ---
@@ -142,7 +144,7 @@ def load_unified_config(
         min_trade_value=Decimal(str(rebalance.get("min_trade_value", 500))),
         tlh_enabled=tlh_enabled,
         avoid_gains_in_taxable=avoid_gains,
-        cash_to_invest=Decimal("0"),
+        cash_to_invest=ZERO,
         account_mappings=account_mappings,
     )
 
@@ -225,4 +227,11 @@ def load_unified_config(
         min_taxable_bonds_usd=Decimal(str(min_bonds)) if min_bonds is not None else None,
     )
 
-    return targets, rebalance_config, output_config, cash_config, german_tax_config, constraints_config
+    return UnifiedConfig(
+        targets=targets,
+        rebalance_config=rebalance_config,
+        output_config=output_config,
+        cash_config=cash_config,
+        german_tax_config=german_tax_config,
+        constraints_config=constraints_config,
+    )

@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import OrderedDict, defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -7,9 +8,9 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from collections import OrderedDict
-
 from .models import (
+    HUNDRED,
+    ZERO,
     ConsolidationAnalysis,
     ConstraintCheck,
     GermanTaxAnnotation,
@@ -69,7 +70,7 @@ def build_execution_plan(trades: list[Trade]) -> list[ExecutionStep]:
     buy_groups = _group_by_account(buys)
 
     steps: list[ExecutionStep] = []
-    cash = Decimal("0")
+    cash = ZERO
     step_num = 0
 
     for acct, acct_trades in sell_groups.items():
@@ -154,14 +155,14 @@ def _compute_allocation(
         ticker_info = mapping.get(p.ticker)
         asset_class = ticker_info.asset_class if ticker_info else "unmapped"
         value_by_class[asset_class] = value_by_class.get(
-            asset_class, Decimal("0")
+            asset_class, ZERO
         ) + p.market_value
 
     pct_by_class: dict[str, Decimal] = {}
     if total_value > 0:
         quantizer = Decimal("0.1") ** pct_precision if pct_precision > 0 else Decimal("1")
         for cls, val in value_by_class.items():
-            pct_by_class[cls] = (val / total_value * Decimal("100")).quantize(quantizer)
+            pct_by_class[cls] = (val / total_value * HUNDRED).quantize(quantizer)
 
     return total_value, value_by_class, pct_by_class
 
@@ -178,9 +179,9 @@ def print_allocation_table(
     )
 
     # Positions by account
-    accounts: dict[str, list[Position]] = {}
+    accounts: defaultdict[str, list[Position]] = defaultdict(list)
     for p in positions:
-        accounts.setdefault(p.account_name, []).append(p)
+        accounts[p.account_name].append(p)
 
     table = Table(title="Current Positions")
     table.add_column("Account", style="cyan")
@@ -243,9 +244,9 @@ def print_rebalance_report(
         set(result.current_allocation.keys()) | set(result.target_allocation.keys())
     )
     for cls in all_classes:
-        current = result.current_allocation.get(cls, Decimal("0"))
-        target = result.target_allocation.get(cls, Decimal("0"))
-        drift = result.drift.get(cls, Decimal("0"))
+        current = result.current_allocation.get(cls, ZERO)
+        target = result.target_allocation.get(cls, ZERO)
+        drift = result.drift.get(cls, ZERO)
         drift_style = "red" if drift < 0 else "green" if drift > 0 else ""
         alloc_table.add_row(
             cls,
@@ -390,9 +391,9 @@ def write_markdown_report(
         set(result.current_allocation.keys()) | set(result.target_allocation.keys())
     )
     for cls in all_classes:
-        current = result.current_allocation.get(cls, Decimal("0"))
-        target = result.target_allocation.get(cls, Decimal("0"))
-        drift = result.drift.get(cls, Decimal("0"))
+        current = result.current_allocation.get(cls, ZERO)
+        target = result.target_allocation.get(cls, ZERO)
+        drift = result.drift.get(cls, ZERO)
         lines.append(f"| {cls} | {current}% | {target}% | {drift:+}% |")
 
     # Trade plan
@@ -509,9 +510,9 @@ def write_csv_report(
     )
     drift_parts = []
     for cls in all_classes:
-        current = result.current_allocation.get(cls, Decimal("0"))
-        target = result.target_allocation.get(cls, Decimal("0"))
-        drift = result.drift.get(cls, Decimal("0"))
+        current = result.current_allocation.get(cls, ZERO)
+        target = result.target_allocation.get(cls, ZERO)
+        drift = result.drift.get(cls, ZERO)
         drift_parts.append(f"{cls}: {current}% -> {target}% ({drift:+}%)")
     writer.writerow(["# Allocation Drift"] + drift_parts)
 

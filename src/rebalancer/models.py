@@ -1,8 +1,11 @@
 from decimal import Decimal
 from enum import Enum
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
+
+ZERO = Decimal("0")
+HUNDRED = Decimal("100")
 
 
 class AccountType(str, Enum):
@@ -12,6 +15,15 @@ class AccountType(str, Enum):
     ROTH_401K = "roth_401k"
     FOUR_01K = "401k"
     HSA = "hsa"
+
+
+TAX_ADVANTAGED = {
+    AccountType.TRADITIONAL_IRA,
+    AccountType.ROTH_IRA,
+    AccountType.ROTH_401K,
+    AccountType.FOUR_01K,
+    AccountType.HSA,
+}
 
 
 class TaxLot(BaseModel):
@@ -61,9 +73,9 @@ class Trade(BaseModel):
 
 
 class TaxImpact(BaseModel):
-    estimated_total_gains: Decimal = Decimal("0")
-    estimated_total_losses: Decimal = Decimal("0")
-    estimated_net: Decimal = Decimal("0")
+    estimated_total_gains: Decimal = ZERO
+    estimated_total_losses: Decimal = ZERO
+    estimated_net: Decimal = ZERO
     taxable_trades_count: int = 0
 
 
@@ -118,8 +130,8 @@ class OutputConfig(BaseModel):
 
 
 class CashCategory(BaseModel):
-    eur: Decimal = Decimal("0")
-    usd: Decimal = Decimal("0")
+    eur: Decimal = ZERO
+    usd: Decimal = ZERO
 
 
 class CashConfig(BaseModel):
@@ -128,8 +140,8 @@ class CashConfig(BaseModel):
     emergency: CashCategory = CashCategory()
     # Legacy fields (deprecated, mapped to investable/emergency on load)
     include_in_portfolio: bool = True
-    external_cash_eur: Decimal = Decimal("0")
-    external_cash_usd: Decimal = Decimal("0")
+    external_cash_eur: Decimal = ZERO
+    external_cash_usd: Decimal = ZERO
 
 
 class GermanFundCategory(str, Enum):
@@ -169,7 +181,7 @@ class RebalanceConfig(BaseModel):
     min_trade_value: Decimal = Decimal("50")
     tlh_enabled: bool = True
     avoid_gains_in_taxable: bool = True
-    cash_to_invest: Decimal = Decimal("0")
+    cash_to_invest: Decimal = ZERO
     account_mappings: dict[str, AccountType] = {}
 
 
@@ -190,3 +202,12 @@ class ConsolidationAnalysis(BaseModel):
     end_state_pct: Decimal
     legacy_pct: Decimal
     opportunities: list[ConsolidationOpportunity]
+
+
+class UnifiedConfig(NamedTuple):
+    targets: list[AllocationTarget]
+    rebalance_config: RebalanceConfig
+    output_config: OutputConfig
+    cash_config: CashConfig
+    german_tax_config: GermanTaxConfig
+    constraints_config: ConstraintsConfig

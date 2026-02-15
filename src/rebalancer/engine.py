@@ -1,9 +1,12 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import version as pkg_version
 
 from .models import (
+    HUNDRED,
+    ZERO,
     AccountType,
     AllocationTarget,
     ConsolidationAnalysis,
@@ -14,12 +17,13 @@ from .models import (
     RebalanceConfig,
     RebalanceResult,
     RunMetadata,
+    TAX_ADVANTAGED,
     TaxImpact,
     TaxLot,
     TickerMapping,
     Trade,
+    Transaction,
 )
-from .models import Transaction
 from .tlh import check_wash_sales, find_tlh_opportunities
 
 def build_run_metadata(eurusd_fx: Decimal) -> RunMetadata:
@@ -35,15 +39,6 @@ def build_run_metadata(eurusd_fx: Decimal) -> RunMetadata:
     )
 
 
-TAX_ADVANTAGED = {
-    AccountType.TRADITIONAL_IRA,
-    AccountType.ROTH_IRA,
-    AccountType.ROTH_401K,
-    AccountType.FOUR_01K,
-    AccountType.HSA,
-}
-
-
 @dataclass
 class CashPools:
     """Tracks available cash per funding boundary.
@@ -52,18 +47,18 @@ class CashPools:
     Each tax-advantaged account is isolated.
     """
 
-    taxable_pool: Decimal = Decimal("0")
+    taxable_pool: Decimal = ZERO
     tax_adv_pools: dict[str, Decimal] = field(default_factory=dict)
 
     def available(self, account_name: str, account_type: AccountType) -> Decimal:
         if account_type in TAX_ADVANTAGED:
-            return self.tax_adv_pools.get(account_name, Decimal("0"))
+            return self.tax_adv_pools.get(account_name, ZERO)
         return self.taxable_pool
 
     def add(self, account_name: str, account_type: AccountType, amount: Decimal) -> None:
         if account_type in TAX_ADVANTAGED:
             self.tax_adv_pools[account_name] = (
-                self.tax_adv_pools.get(account_name, Decimal("0")) + amount
+                self.tax_adv_pools.get(account_name, ZERO) + amount
             )
         else:
             self.taxable_pool += amount
@@ -71,7 +66,7 @@ class CashPools:
     def spend(self, account_name: str, account_type: AccountType, amount: Decimal) -> None:
         if account_type in TAX_ADVANTAGED:
             self.tax_adv_pools[account_name] = (
-                self.tax_adv_pools.get(account_name, Decimal("0")) - amount
+                self.tax_adv_pools.get(account_name, ZERO) - amount
             )
         else:
             self.taxable_pool -= amount
@@ -100,7 +95,7 @@ def check_constraints(
 
     if constraints.min_taxable_bonds_usd is not None:
         # Current taxable bond value
-        taxable_bond_value = Decimal("0")
+        taxable_bond_value = ZERO
         for p in positions:
             tm = mapping.get(p.ticker)
             if tm and tm.asset_class == "bonds" and p.account_type == AccountType.TAXABLE:
@@ -152,7 +147,7 @@ def rebalance(
     total_value = sum(p.market_value for p in positions)
     if total_value == 0:
         return RebalanceResult(
-            total_portfolio_value=Decimal("0"),
+            total_portfolio_value=ZERO,
             current_allocation={},
             target_allocation={t.asset_class: t.target_pct for t in targets},
             drift={},
@@ -169,7 +164,7 @@ def rebalance(
         ticker_info = mapping.get(p.ticker)
         asset_class = ticker_info.asset_class if ticker_info else "unmapped"
         value_by_class[asset_class] = (
-            value_by_class.get(asset_class, Decimal("0")) + p.market_value
+            value_by_class.get(asset_class, ZERO) + p.market_value
         )
 
     if "unmapped" in value_by_class:
@@ -182,7 +177,7 @@ def rebalance(
 
     current_allocation: dict[str, Decimal] = {}
     for cls, val in value_by_class.items():
-        current_allocation[cls] = _quantize_pct(val / total_value * Decimal("100"))
+        current_allocation[cls] = _quantize_pct(val / total_value * HUNDRED)
 
     target_allocation: dict[str, Decimal] = {
         t.asset_class: t.target_pct for t in targets
@@ -192,28 +187,28 @@ def rebalance(
     all_classes = sorted(set(current_allocation.keys()) | set(target_allocation.keys()))
     drift: dict[str, Decimal] = {}
     for cls in all_classes:
-        current = current_allocation.get(cls, Decimal("0"))
-        target = target_allocation.get(cls, Decimal("0"))
+        current = current_allocation.get(cls, ZERO)
+        target = target_allocation.get(cls, ZERO)
         drift[cls] = _quantize_pct(current - target)
 
     # Calculate target dollar amounts based on effective total
     target_amounts: dict[str, Decimal] = {}
     for cls in all_classes:
-        target_pct = target_allocation.get(cls, Decimal("0"))
-        target_amounts[cls] = effective_total * target_pct / Decimal("100")
+        target_pct = target_allocation.get(cls, ZERO)
+        target_amounts[cls] = effective_total * target_pct / HUNDRED
 
     # Dollar adjustment needed per class (negative = need to sell, positive = need to buy)
     adjustment_by_class: dict[str, Decimal] = {}
     for cls in all_classes:
         if cls == "unmapped":
             continue
-        current_val = value_by_class.get(cls, Decimal("0"))
-        target_val = target_amounts.get(cls, Decimal("0"))
+        current_val = value_by_class.get(cls, ZERO)
+        target_val = target_amounts.get(cls, ZERO)
         adj = target_val - current_val
         # Skip if drift below both thresholds (OR logic: breach either → rebalance)
-        abs_drift = abs(drift.get(cls, Decimal("0")))
-        target_pct = target_allocation.get(cls, Decimal("0"))
-        rel_drift = (abs_drift / target_pct * Decimal("100")) if target_pct > 0 else Decimal("0")
+        abs_drift = abs(drift.get(cls, ZERO))
+        target_pct = target_allocation.get(cls, ZERO)
+        rel_drift = (abs_drift / target_pct * HUNDRED) if target_pct > 0 else ZERO
         abs_ok = abs_drift < config.threshold_pct
         rel_ok = rel_drift < config.threshold_relative_pct
         if abs_ok and rel_ok and config.cash_to_invest == 0:
@@ -246,8 +241,8 @@ def rebalance(
             warnings.append(tw)
 
     # Compute tax impact summary (only taxable sell trades matter)
-    total_gains = Decimal("0")
-    total_losses = Decimal("0")
+    total_gains = ZERO
+    total_losses = ZERO
     taxable_count = 0
     for t in trades:
         if (
@@ -363,8 +358,8 @@ def _pick_buy_ticker(
         # Find any ticker mapped to this class
         for ticker, info in mapping.items():
             if info.asset_class == asset_class:
-                return ticker, Decimal("0"), None
-        return None, Decimal("0"), None
+                return ticker, ZERO, None
+        return None, ZERO, None
 
     # Prefer tax-advantaged accounts
     tax_adv = [c for c in candidates if c.account_type in TAX_ADVANTAGED]
@@ -527,6 +522,49 @@ def _sort_lots(
     return lots
 
 
+def _estimate_gain_loss(
+    price: Decimal,
+    shares: Decimal,
+    cost_basis_per_share: Decimal | None,
+    market_value: Decimal | None,
+    cost_basis_total: Decimal | None,
+    quantity: Decimal,
+    account_type: AccountType,
+    avoid_gains: bool,
+) -> tuple[Decimal | None, list[str]]:
+    """Estimate gain/loss and generate warnings for a sell trade.
+
+    Uses per-share cost basis (lot-aware) when available, otherwise
+    falls back to blended basis from position-level totals.
+
+    Returns (estimated_gain_loss, warnings).
+    """
+    warnings: list[str] = []
+    est: Decimal | None = None
+
+    if cost_basis_per_share is not None:
+        est = ((price - cost_basis_per_share) * shares).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    elif cost_basis_total is not None and market_value is not None and quantity > 0:
+        gain_per_share = (market_value - cost_basis_total) / quantity
+        est = (gain_per_share * shares).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    if (
+        account_type == AccountType.TAXABLE
+        and avoid_gains
+        and est is not None
+        and est > 0
+    ):
+        warnings.append(
+            f"Selling at estimated gain of ${est} in taxable account"
+        )
+
+    return est, warnings
+
+
 def _generate_rebalance_trades(
     positions: list[Position],
     adjustment_by_class: dict[str, Decimal],
@@ -541,13 +579,12 @@ def _generate_rebalance_trades(
     pools = _build_initial_cash_pools(positions, mapping)
 
     # Group positions by asset class and account type
-    positions_by_class: dict[str, list[Position]] = {}
+    positions_by_class: defaultdict[str, list[Position]] = defaultdict(list)
     for p in positions:
         ticker_info = mapping.get(p.ticker)
         if not ticker_info:
             continue
-        cls = ticker_info.asset_class
-        positions_by_class.setdefault(cls, []).append(p)
+        positions_by_class[ticker_info.asset_class].append(p)
 
     # Process sells first (overweight classes)
     for cls, adj in adjustment_by_class.items():
@@ -562,7 +599,7 @@ def _generate_rebalance_trades(
         def _sell_sort_key(p: Position) -> tuple[int, Decimal]:
             is_tax_adv = 0 if p.account_type in TAX_ADVANTAGED else 1
             # For taxable, prefer positions with losses (lower gain = sell first)
-            gain = Decimal("0")
+            gain = ZERO
             if p.cost_basis_total is not None and p.market_value > 0:
                 gain = p.market_value - p.cost_basis_total
             return (is_tax_adv, gain)
@@ -598,22 +635,15 @@ def _generate_rebalance_trades(
                         Decimal("0.01"), rounding=ROUND_HALF_UP
                     )
 
-                    trade_warnings: list[str] = []
-                    est_gain_loss = ((p.price - lot.cost_basis_per_share) * shares).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    est_gain_loss, trade_warnings = _estimate_gain_loss(
+                        p.price, shares, lot.cost_basis_per_share,
+                        None, None, p.quantity, p.account_type,
+                        config.avoid_gains_in_taxable,
                     )
-
-                    if (
-                        p.account_type == AccountType.TAXABLE
-                        and config.avoid_gains_in_taxable
-                        and est_gain_loss > 0
-                    ):
-                        trade_warnings.append(
-                            f"Selling at estimated gain of ${est_gain_loss} in taxable account"
-                        )
 
                     is_loss = (
                         p.account_type == AccountType.TAXABLE
+                        and est_gain_loss is not None
                         and est_gain_loss < 0
                     )
 
@@ -647,24 +677,11 @@ def _generate_rebalance_trades(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
 
-                trade_warnings: list[str] = []
-                est_gain_loss: Decimal | None = None
-
-                if p.cost_basis_total is not None and p.quantity > 0:
-                    gain_per_share = (p.market_value - p.cost_basis_total) / p.quantity
-                    est_gain_loss = (gain_per_share * shares).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-
-                if (
-                    p.account_type == AccountType.TAXABLE
-                    and config.avoid_gains_in_taxable
-                    and est_gain_loss is not None
-                    and est_gain_loss > 0
-                ):
-                    trade_warnings.append(
-                        f"Selling at estimated gain of ${est_gain_loss} in taxable account"
-                    )
+                est_gain_loss, trade_warnings = _estimate_gain_loss(
+                    p.price, shares, None,
+                    p.market_value, p.cost_basis_total, p.quantity,
+                    p.account_type, config.avoid_gains_in_taxable,
+                )
 
                 is_loss = (
                     p.account_type == AccountType.TAXABLE
@@ -698,7 +715,7 @@ def _generate_rebalance_trades(
         key=lambda x: x[1],
         reverse=True,
     )
-    total_shortfall = Decimal("0")
+    total_shortfall = ZERO
     for cls, buy_amount in underweight:
         buy_trades = _allocate_buys(cls, buy_amount, positions, mapping, config, pools)
         trades.extend(buy_trades)
@@ -724,8 +741,8 @@ def analyze_consolidation(
 
     Returns a ConsolidationAnalysis with per-position opportunities for consolidation.
     """
-    end_state_value = Decimal("0")
-    legacy_value = Decimal("0")
+    end_state_value = ZERO
+    legacy_value = ZERO
     opportunities: list[ConsolidationOpportunity] = []
 
     for p in positions:
@@ -775,15 +792,15 @@ def analyze_consolidation(
 
     total = end_state_value + legacy_value
     if total > 0:
-        end_state_pct = (end_state_value / total * Decimal("100")).quantize(
+        end_state_pct = (end_state_value / total * HUNDRED).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
-        legacy_pct = (legacy_value / total * Decimal("100")).quantize(
+        legacy_pct = (legacy_value / total * HUNDRED).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
     else:
-        end_state_pct = Decimal("0")
-        legacy_pct = Decimal("0")
+        end_state_pct = ZERO
+        legacy_pct = ZERO
 
     return ConsolidationAnalysis(
         end_state_value=end_state_value,
