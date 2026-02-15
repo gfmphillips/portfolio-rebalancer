@@ -20,6 +20,7 @@ from rebalancer.models import (
     CashConfig,
     GermanTaxConfig,
     OutputConfig,
+    Position,
     PrecisionConfig,
     RebalanceConfig,
     RebalanceResult,
