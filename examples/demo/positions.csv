@@ -1,0 +1,23 @@
+Account Name/Number,Symbol,Description,Quantity,Last Price,Current Value,Today's Gain/Loss Dollar,Today's Gain/Loss Percent,Total Gain/Loss Dollar,Total Gain/Loss Percent,Percent Of Account,Cost Basis Total,Average Cost Basis,Type
+Individual - TOD...XXX111222,,,,,,,,,,,,
+,VTI,VANGUARD TOTAL STOCK MKT ETF,150,"$280.00","$42,000.00","$140.00",0.33%,"$12,000.00",40.00%,51.85%,"$30,000.00",$200.00,Cash
+,VXUS,VANGUARD TOTAL INTL STOCK ETF,180,"$62.00","$11,160.00","$36.00",0.32%,"$1,160.00",11.60%,13.78%,"$10,000.00",$55.56,Cash
+,BND,VANGUARD TOTAL BOND MKT ETF,80,"$73.00","$5,840.00","-$16.00",-0.27%,"-$160.00",-2.67%,7.21%,"$6,000.00",$75.00,Cash
+,FXAIX,FIDELITY 500 INDEX FUND,60,"$210.00","$12,600.00","$63.00",0.50%,"$4,600.00",57.50%,15.56%,"$8,000.00",$133.33,Cash
+,VGK,VANGUARD FTSE EUROPE ETF,50,"$70.00","$3,500.00","$14.00",0.40%,"-$500.00",-12.50%,4.32%,"$4,000.00",$80.00,Cash
+,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,,,"$5,900.00",,,,7.29%,,,,Cash
+ROTH IRA...XXX333444,,,,,,,,,,,,
+,VTI,VANGUARD TOTAL STOCK MKT ETF,60,"$280.00","$16,800.00","$56.00",0.33%,"$6,800.00",68.00%,48.00%,"$10,000.00",$166.67,Cash
+,VXUS,VANGUARD TOTAL INTL STOCK ETF,100,"$62.00","$6,200.00","$20.00",0.32%,"$1,200.00",24.00%,17.71%,"$5,000.00",$50.00,Cash
+,BND,VANGUARD TOTAL BOND MKT ETF,60,"$73.00","$4,380.00","-$12.00",-0.27%,"$380.00",9.50%,12.51%,"$4,000.00",$66.67,Cash
+,VCSH,VANGUARD SHORT-TERM CORP BOND,40,"$78.00","$3,120.00","-$8.00",-0.26%,"-$80.00",-2.50%,8.91%,"$3,200.00",$80.00,Cash
+,SPAXX**,FIDELITY GOVERNMENT MONEY MARKET,,,"$4,500.00",,,,12.86%,,,,Cash
+Rollover IRA...XXX555666,,,,,,,,,,,,
+,FXAIX,FIDELITY 500 INDEX FUND,80,"$210.00","$16,800.00","$84.00",0.50%,"$6,800.00",68.00%,53.33%,"$10,000.00",$125.00,Cash
+,IEMG,ISHARES CORE MSCI EM ETF,120,"$55.00","$6,600.00","$12.00",0.18%,"-$600.00",-8.33%,20.95%,"$7,200.00",$60.00,Cash
+,BSV,VANGUARD SHORT-TERM BOND ETF,50,"$76.00","$3,800.00","-$10.00",-0.26%,"-$200.00",-5.00%,12.06%,"$4,000.00",$80.00,Cash
+,FDRXX**,FIDELITY GOVERNMENT MONEY MARKET,,,"$4,300.00",,,,13.65%,,,,Cash
+
+The totals for all of your accounts.
+Account Name/Number,Symbol,Description,Quantity,Last Price,Current Value
+,,,"","","$147,500.00"
