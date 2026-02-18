@@ -692,7 +692,10 @@ def _load_all(mapping: dict, account_mappings: dict):
     if live:
         updated = []
         for p in positions:
-            if p.ticker in live:
+            if p.ticker in live and p.quantity > 0:
+                # Only update when quantity is known — cash/money-market positions
+                # (FDRXX, FCASH, etc.) have quantity=0 in the CSV; their
+                # market_value is already the correct dollar balance.
                 new_price = live[p.ticker]
                 new_mv = (new_price * p.quantity).quantize(Decimal("0.01"))
                 updated.append(p.model_copy(update={"price": new_price, "market_value": new_mv}))
