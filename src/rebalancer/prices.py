@@ -53,8 +53,8 @@ def fetch_prices(tickers: list[str]) -> dict[str, Decimal]:
     try:
         raw = yf.download(
             to_fetch,
-            period="5d",
-            interval="1d",
+            period="1d",
+            interval="2m",  # intraday bars: most recent price during the current session
             auto_adjust=True,
             progress=False,
         )

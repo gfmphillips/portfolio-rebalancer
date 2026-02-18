@@ -702,6 +702,7 @@ def _load_all(mapping: dict, account_mappings: dict):
 
     # Apply live prices: update each position's price and recalculate market value.
     live = st.session_state.live_prices
+    price_warnings: list[str] = []
     if live:
         updated = []
         for p in positions:
@@ -710,6 +711,17 @@ def _load_all(mapping: dict, account_mappings: dict):
                 # (FDRXX, FCASH, etc.) have quantity=0 in the CSV; their
                 # market_value is already the correct dollar balance.
                 new_price = live[p.ticker]
+                # Sanity check: warn if live price deviates >25% from the CSV price.
+                # This catches clearly bad data (e.g. yfinance returning a stale or
+                # wrong ticker) before it silently affects trade calculations.
+                if p.price and p.price > 0:
+                    ratio = float(new_price / p.price)
+                    if ratio < 0.75 or ratio > 1.25:
+                        price_warnings.append(
+                            f"**{p.ticker}**: live price **${float(new_price):.2f}** differs "
+                            f"**{abs(1 - ratio):.0%}** from your CSV price **${float(p.price):.2f}**. "
+                            "Verify this is correct before placing any trades."
+                        )
                 new_mv = (new_price * p.quantity).quantize(Decimal("0.01"))
                 updated.append(p.model_copy(update={"price": new_price, "market_value": new_mv}))
             else:
@@ -757,7 +769,7 @@ def _load_all(mapping: dict, account_mappings: dict):
     lot_warnings, lot_errors = _parse_lots_data(positions)
 
     all_errors = acct_map_errors + txn_errors + lot_errors
-    return positions, targets, mapping, config, output_config, bank_positions, recent_transactions, lot_warnings, all_errors
+    return positions, targets, mapping, config, output_config, bank_positions, recent_transactions, lot_warnings, all_errors, price_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -819,7 +831,7 @@ tab_overview, tab_rebalance, tab_trades, tab_consolidation, tab_projection = st.
 
 # Try to load data
 try:
-    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings, lot_errors = _load_all(mapping, account_mappings)
+    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings, lot_errors, price_warnings = _load_all(mapping, account_mappings)
     all_positions = positions + bank_positions
     data_ok = True
 except Exception as e:
@@ -827,6 +839,7 @@ except Exception as e:
     data_error = str(e)
     lot_warnings = []
     lot_errors = []
+    price_warnings = []
 
 if data_ok and lot_errors:
     for err in lot_errors:
@@ -837,6 +850,13 @@ with tab_overview:
     if not data_ok:
         st.error(f"Cannot load data: {data_error}")
     else:
+        if price_warnings:
+            for pw in price_warnings:
+                st.warning(
+                    f"**Live price sanity check:** {pw}",
+                    icon="⚠️",
+                )
+
         total_value, value_by_class, pct_by_class = _compute_allocation(
             all_positions, mapping, pct_precision=oc.precision.pct
         )
