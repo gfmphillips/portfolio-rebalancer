@@ -6,6 +6,7 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 import streamlit as st
+import pandas as pd
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
@@ -88,6 +89,26 @@ DEFAULT_ACCOUNT_MAPPINGS = {
     "401(K)": "401k",
 }
 
+ASSET_CLASS_DISPLAY = {
+    "cash": "Cash",
+    "bonds": "Bonds",
+    "reit": "REIT",
+    "us_equity": "US Equity",
+    "intl_equity": "Intl Equity",
+}
+ASSET_CLASS_OPTIONS = list(ASSET_CLASS_DISPLAY.values())
+ASSET_CLASS_OPTION_TO_KEY = {v: k for k, v in ASSET_CLASS_DISPLAY.items()}
+
+ACCOUNT_TYPE_LABELS = {
+    "taxable": "Taxable (Individual / Brokerage)",
+    "traditional_ira": "Traditional IRA / Rollover IRA",
+    "roth_ira": "Roth IRA",
+    "roth_401k": "Roth 401(k)",
+    "401k": "Traditional 401(k)",
+    "hsa": "HSA",
+}
+ACCOUNT_TYPE_LABEL_TO_VALUE = {v: k for k, v in ACCOUNT_TYPE_LABELS.items()}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -113,6 +134,70 @@ def _save_temp(content: str, suffix: str) -> Path:
     return Path(tmp.name)
 
 
+def _default_ticker_rows() -> list[dict]:
+    """Load default ticker rows from examples/mapping.yaml."""
+    try:
+        m = load_mapping(EXAMPLE_DIR / "mapping.yaml")
+        return [
+            {
+                "Ticker": ticker,
+                "Asset Class": ASSET_CLASS_DISPLAY.get(info.asset_class, info.asset_class),
+                "Target Fund?": info.preferred,
+                "Consolidate Into": info.consolidate_to or "",
+                "Price ($)": float(info.price) if info.price is not None else None,
+            }
+            for ticker, info in m.items()
+        ]
+    except Exception:
+        return []
+
+
+def _default_acct_rules() -> list[dict]:
+    """Build default account rules from DEFAULT_ACCOUNT_MAPPINGS."""
+    return [
+        {"If name contains": substr, "Treat as": ACCOUNT_TYPE_LABELS.get(acct_type, acct_type)}
+        for substr, acct_type in DEFAULT_ACCOUNT_MAPPINGS.items()
+    ]
+
+
+def _build_mapping_from_rows(rows: list[dict]) -> dict[str, TickerMapping]:
+    """Build a TickerMapping dict from the structured ticker editor rows."""
+    mapping: dict[str, TickerMapping] = {}
+    for row in rows:
+        ticker = str(row.get("Ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        asset_class_display = str(row.get("Asset Class") or "US Equity")
+        asset_class = ASSET_CLASS_OPTION_TO_KEY.get(asset_class_display, "us_equity")
+        preferred = bool(row.get("Target Fund?", False))
+        consolidate_to = str(row.get("Consolidate Into") or "").strip() or None
+        price_val = row.get("Price ($)")
+        try:
+            price = Decimal(str(price_val)) if price_val is not None and str(price_val) not in ("", "nan", "None") else None
+        except Exception:
+            price = None
+        mapping[ticker] = TickerMapping(
+            asset_class=asset_class,
+            preferred=preferred,
+            consolidate_to=consolidate_to,
+            price=price,
+        )
+    return mapping
+
+
+def _build_account_mappings_from_rows(rules: list[dict]) -> dict[str, AccountType]:
+    """Build an account_mappings dict from the structured account rules editor rows."""
+    account_mappings: dict[str, AccountType] = {}
+    valid_values = {e.value for e in AccountType}
+    for rule in rules:
+        keyword = str(rule.get("If name contains") or "").strip()
+        acct_label = str(rule.get("Treat as") or "")
+        acct_value = ACCOUNT_TYPE_LABEL_TO_VALUE.get(acct_label)
+        if keyword and acct_value and acct_value in valid_values:
+            account_mappings[keyword] = AccountType(acct_value)
+    return account_mappings
+
+
 # ---------------------------------------------------------------------------
 # Session state defaults
 # ---------------------------------------------------------------------------
@@ -120,7 +205,6 @@ _DEFAULTS = {
     "positions": None,
     "mapping_data": None,
     "result": None,
-    "mapping_text": None,
     "dismiss_welcome": False,
     "accepted_disclaimer": False,
 }
@@ -128,17 +212,22 @@ for key, default in _DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
+if "ticker_rows" not in st.session_state:
+    st.session_state.ticker_rows = _default_ticker_rows()
+if "acct_rules" not in st.session_state:
+    st.session_state.acct_rules = _default_acct_rules()
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
 st.sidebar.title("Configuration")
 
-# --- 1. Positions CSV ---
-st.sidebar.header("Portfolio Data")
+# --- 1. Portfolio Data ---
+st.sidebar.header("1. Portfolio Data")
 uploaded_csv = st.sidebar.file_uploader(
     "Upload Fidelity positions CSV", type=["csv"], key="csv_upload",
-    help="Export from Fidelity: Positions page > Download > CSV. The parser handles Fidelity's formatting automatically (dollar signs, trailing ** on money market symbols, account type detection).",
+    help="Export from Fidelity: Positions page > Download > CSV.",
 )
 use_example_csv = st.sidebar.checkbox(
     "Use example CSV", value=not uploaded_csv, key="use_example",
@@ -152,21 +241,50 @@ elif use_example_csv and (EXAMPLE_DIR / "fidelity_positions.csv").exists():
 else:
     csv_path = None
 
-# --- 2. Target Allocation ---
-st.sidebar.header("Target Allocation")
+# --- 2. Your Accounts ---
+st.sidebar.header("2. Your Accounts")
+st.sidebar.caption(
+    "The tool matches these keywords against your Fidelity account names to determine "
+    "each account's tax treatment. Use the ➕ button to add new rules."
+)
+acct_df_edited = st.sidebar.data_editor(
+    pd.DataFrame(st.session_state.acct_rules),
+    column_config={
+        "If name contains": st.column_config.TextColumn(
+            "If name contains...",
+            required=True,
+            help="A word that appears in your Fidelity account name, e.g. 'ROTH' or 'Rollover'.",
+        ),
+        "Treat as": st.column_config.SelectboxColumn(
+            "Treat as",
+            options=list(ACCOUNT_TYPE_LABELS.values()),
+            required=True,
+            help="The tax treatment for accounts matching this keyword.",
+        ),
+    },
+    num_rows="dynamic",
+    hide_index=True,
+    use_container_width=True,
+    key="acct_editor",
+)
+st.session_state.acct_rules = acct_df_edited.to_dict("records")
+account_mappings = _build_account_mappings_from_rows(st.session_state.acct_rules)
 
+# --- 3. Target Mix ---
+st.sidebar.header("3. Target Mix")
+st.sidebar.caption("Set your desired allocation. Must add up to 100%.")
 _ALLOC_HELP = {
-    "cash": "Brokerage cash (SPAXX, FDRXX). Set to 0 to deploy all idle brokerage cash into funds. Bank emergency funds should NOT be included here.",
+    "cash": "Brokerage cash (SPAXX, FDRXX). Set to 0 to invest all idle cash into funds.",
     "bonds": "Fixed income (BND, VCSH, etc.). Provides stability and income.",
-    "reit": "Real estate investment trusts (VNQ, VNQI). Set to 0 if not part of your IPS.",
-    "us_equity": "US total market / S&P 500 (VTI, FXAIX, etc.). Core domestic equity exposure.",
+    "reit": "Real estate investment trusts (VNQ, VNQI). Set to 0 to skip.",
+    "us_equity": "US stocks (VTI, FXAIX, etc.). Core domestic equity exposure.",
     "intl_equity": "International stocks (VXUS, VGK, etc.). Diversification beyond US markets.",
 }
 alloc_values = {}
 for ac in ASSET_CLASSES:
     default_val = {"cash": 0, "bonds": 20, "reit": 0, "us_equity": 48, "intl_equity": 32}.get(ac, 0)
     alloc_values[ac] = st.sidebar.number_input(
-        ac,
+        ASSET_CLASS_DISPLAY.get(ac, ac),
         min_value=0,
         max_value=100,
         value=default_val,
@@ -177,63 +295,95 @@ for ac in ASSET_CLASSES:
 
 alloc_sum = sum(alloc_values.values())
 if alloc_sum == 100:
-    st.sidebar.success(f"Sum: {alloc_sum}%")
+    st.sidebar.success(f"Total: {alloc_sum}%")
 elif alloc_sum > 100:
-    st.sidebar.error(f"Sum: {alloc_sum}% (must be 100)")
+    st.sidebar.error(f"Total: {alloc_sum}% — must equal 100%")
 else:
-    st.sidebar.warning(f"Sum: {alloc_sum}% (must be 100)")
+    st.sidebar.warning(f"Total: {alloc_sum}% — must equal 100%")
 
-# --- 3. Ticker Mapping ---
-st.sidebar.header("Ticker Mapping")
-default_mapping = _load_example_text("mapping.yaml")
-mapping_text = st.sidebar.text_area(
-    "mapping.yaml",
-    value=st.session_state.mapping_text or default_mapping,
-    height=200,
-    key="mapping_input",
-    help="Maps each ticker to an asset class. Also defines 'preferred' end-state funds (e.g. VTI) and 'consolidate_to' targets for legacy funds (e.g. FXAIX -> VTI). Add any tickers from your CSV that aren't already listed.",
+# --- 4. Fund Classification ---
+st.sidebar.header("4. Fund Classification")
+st.sidebar.caption(
+    "Tell us what each fund is. Use the ➕ button to add any funds from your CSV "
+    "that aren't listed. Unmapped funds will appear as warnings after loading."
 )
-st.session_state.mapping_text = mapping_text
+ticker_df_edited = st.sidebar.data_editor(
+    pd.DataFrame(st.session_state.ticker_rows),
+    column_config={
+        "Ticker": st.column_config.TextColumn(
+            "Ticker",
+            required=True,
+            help="The fund's ticker symbol, e.g. VTI, VXUS, SPAXX.",
+        ),
+        "Asset Class": st.column_config.SelectboxColumn(
+            "Asset Class",
+            options=ASSET_CLASS_OPTIONS,
+            required=True,
+            help="What type of asset this fund holds.",
+        ),
+        "Target Fund?": st.column_config.CheckboxColumn(
+            "Target Fund?",
+            help="Check this if this is your preferred long-term holding for this asset class. New buys will go here.",
+        ),
+        "Consolidate Into": st.column_config.TextColumn(
+            "Consolidate Into",
+            help="If you want to move away from this fund over time, enter the target fund ticker here (e.g. enter VTI for FXAIX).",
+        ),
+        "Price ($)": st.column_config.NumberColumn(
+            "Price ($)",
+            help="Current share price. Only needed for target funds you don't currently hold in your portfolio.",
+            min_value=0.0,
+            format="%.2f",
+        ),
+    },
+    num_rows="dynamic",
+    hide_index=True,
+    use_container_width=True,
+    key="ticker_editor",
+)
+st.session_state.ticker_rows = ticker_df_edited.to_dict("records")
+mapping = _build_mapping_from_rows(st.session_state.ticker_rows)
 
-# --- 4. Rebalance Settings ---
-st.sidebar.header("Rebalance Settings")
+# --- 5. Rebalance Settings ---
+st.sidebar.header("5. Rebalance Settings")
 threshold_pct = st.sidebar.number_input(
-    "Absolute threshold %",
+    "Drift threshold (percentage points)",
     min_value=0.0,
     max_value=50.0,
     value=5.0,
     step=0.5,
     key="threshold_pct",
-    help="Rebalance if any asset class drifts more than this many percentage points from target. Example: with 5%, a 48% target triggers at 43% or 53%.",
+    help="Trigger a rebalance when any asset class drifts this many percentage points from its target. Example: with 5%, a 48% target triggers at 43% or 53%.",
 )
 threshold_relative_pct = st.sidebar.number_input(
-    "Relative threshold %",
+    "Drift threshold (relative %)",
     min_value=0.0,
     max_value=100.0,
     value=20.0,
     step=1.0,
     key="threshold_relative_pct",
-    help="Rebalance if drift exceeds this % of the target itself. Example: with 20%, a 20% target triggers at 16% or 24% (20% of 20 = 4pp). Catches drift in smaller allocations that the absolute band would miss. Either band breached = rebalance.",
+    help="Trigger a rebalance when drift exceeds this percentage of the target itself. Example: with 20%, a 20% target triggers at 16% or 24%. Either threshold being breached triggers a rebalance.",
 )
 min_trade_value = st.sidebar.number_input(
-    "Min trade value ($)",
+    "Minimum trade size ($)",
     min_value=0.0,
     value=500.0,
     step=50.0,
     key="min_trade_value",
-    help="Ignore trades smaller than this dollar amount. Prevents generating tiny trades that aren't worth executing.",
+    help="Skip any individual trade smaller than this amount.",
 )
 
-# --- 5. Tax ---
-st.sidebar.header("Tax")
-tax_enabled = st.sidebar.toggle("Tax-aware trading", value=False, key="tax_enabled",
-    help="When enabled: sells in retirement accounts first (no tax), prefers selling losses in taxable accounts (tax-loss harvesting), warns on taxable gains, and detects wash sales across accounts.",
+# --- 6. Tax ---
+st.sidebar.header("6. Tax")
+tax_enabled = st.sidebar.toggle(
+    "Tax-aware trading", value=False, key="tax_enabled",
+    help="Prioritizes selling in retirement accounts first (no tax), prefers selling at a loss in taxable accounts (tax-loss harvesting), and detects potential wash sales.",
 )
 uploaded_transactions = st.sidebar.file_uploader(
     "Transaction history CSV (optional)",
     type=["csv"],
     key="transactions_upload",
-    help="Upload recent transaction history for wash sale detection. Supports simplified format (Date,Account,Ticker,Action,Shares) or Fidelity native export. Recent buys within 30 days are checked against proposed loss-sells.",
+    help="Upload for wash sale detection. Supports Fidelity's native export or a simplified format (Date, Account, Ticker, Action, Shares).",
 )
 txn_path = None
 if uploaded_transactions:
@@ -243,158 +393,105 @@ uploaded_lots = st.sidebar.file_uploader(
     "Tax lot CSV (optional)",
     type=["csv"],
     key="lots_upload",
-    help="Upload tax lot data for lot-aware selling. Format: Account,Ticker,AcquisitionDate,Shares,CostBasisPerShare. Enables HIFO (taxable) and FIFO (retirement) lot selection.",
+    help="Upload tax lot data for lot-level sell selection. Format: Account, Ticker, AcquisitionDate, Shares, CostBasisPerShare.",
 )
 lots_path = None
 if uploaded_lots:
     lots_path = _save_temp(uploaded_lots.getvalue().decode("utf-8-sig"), ".csv")
 
 fidelity_lots_paste = st.sidebar.text_area(
-    "Paste Fidelity lot data",
+    "Paste Fidelity lot data (optional)",
     value="",
-    height=150,
+    height=100,
     key="fidelity_lots_paste",
-    help="Copy-paste the Fidelity Positions page (with lots expanded) as an alternative to uploading a lot CSV. If both are provided, the uploaded CSV takes priority.",
+    help="Alternative to uploading a lot CSV — copy-paste the Fidelity Positions page with lots expanded.",
 )
 
-# --- 6. External Cash ---
-st.sidebar.header("External Cash")
+# --- 7. External Cash ---
+st.sidebar.header("7. External Cash")
 
 st.sidebar.subheader("Investable Cash")
-st.sidebar.caption("Bank cash available for rebalancing. Counts toward allocation and can fund buys.")
+st.sidebar.caption("Bank cash you want to invest. Counted in your allocation and can fund buys.")
 invest_usd = st.sidebar.number_input(
-    "Investable USD ($)",
+    "US bank cash ($)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="invest_usd",
-    help="Cash held in US bank accounts available for investing. Brokerage cash (SPAXX, FDRXX) is already in your CSV.",
+    help="Cash in a US bank account ready to invest. Brokerage cash (SPAXX, FDRXX) is already in your CSV.",
 )
 invest_eur = st.sidebar.number_input(
-    "Investable EUR (\u20ac)",
+    "European bank cash (\u20ac)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="invest_eur",
-    help="Cash held in European bank accounts available for investing.",
+    help="Cash in a European bank account ready to invest.",
 )
 
-st.sidebar.subheader("Emergency Cash")
-st.sidebar.caption("Emergency fund. Visible in portfolio total but excluded from rebalancing.")
+st.sidebar.subheader("Emergency Fund")
+st.sidebar.caption("Your emergency fund. Shown in your portfolio total but never touched by the rebalancer.")
 emergency_usd = st.sidebar.number_input(
-    "Emergency USD ($)",
+    "US emergency fund ($)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="emergency_usd",
-    help="US emergency fund. Shows in portfolio overview but the rebalancer won't touch it.",
+    help="US emergency fund. Visible in your portfolio overview but excluded from all rebalancing calculations.",
 )
 emergency_eur = st.sidebar.number_input(
-    "Emergency EUR (\u20ac)",
+    "European emergency fund (\u20ac)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="emergency_eur",
-    help="European emergency fund. Shows in portfolio overview but the rebalancer won't touch it.",
+    help="European emergency fund. Visible in your portfolio overview but excluded from all rebalancing calculations.",
 )
 
-use_live_fx = st.sidebar.checkbox("Fetch live EUR/USD rate", value=True, key="use_live_fx",
-    help="Fetches the current EUR/USD exchange rate from the Frankfurter API. Falls back to the manual rate if the API is unavailable.",
+use_live_fx = st.sidebar.checkbox(
+    "Fetch live EUR/USD rate", value=True, key="use_live_fx",
+    help="Fetches the current EUR/USD exchange rate automatically. Falls back to the manual rate if unavailable.",
 )
 
 _live_rate: Decimal | None = None
 if use_live_fx:
     _live_rate = fetch_fx_rate("EUR", "USD")
     if _live_rate is not None:
-        st.sidebar.caption(f"Live EUR/USD: {_live_rate}")
+        st.sidebar.caption(f"Live EUR/USD rate: {_live_rate}")
     else:
-        st.sidebar.caption("Failed to fetch live rate")
+        st.sidebar.caption("Could not fetch live rate — using manual rate below.")
 
 fx_default = float(_live_rate) if _live_rate is not None else 1.10
 manual_fx = st.sidebar.number_input(
-    "EUR/USD rate (fallback)",
+    "EUR/USD rate",
     min_value=0.01,
     value=fx_default,
     step=0.01,
     format="%.4f",
     key="manual_fx",
-    help="How many USD per 1 EUR. Used when live rate is unavailable or unchecked. Example: 1.10 means 1 EUR = 1.10 USD.",
+    help="How many US dollars per 1 euro. Example: 1.10 means \u20ac1 = $1.10.",
 )
 
-# --- 7. Display Settings ---
+# --- 8. Display Settings ---
 show_only_actionable = True
 sort_order = [SortKey.SELLS_FIRST, SortKey.LARGEST_TRADE_FIRST]
 currency_precision = 0
 
-# --- 8. German Tax ---
-st.sidebar.header("German Tax")
-german_tax_enabled = st.sidebar.toggle(
-    "Show German tax annotations", value=True, key="german_tax_enabled",
-    help="Adds InvStG analysis to the Trade Plan: Teilfreistellung rates (30% for equity, 15% mixed, 0% bonds), PFIC risk warnings for non-US funds, and Sparerpauschbetrag reminder.",
-)
-german_tax_filing = "single"
-if german_tax_enabled:
-    german_tax_filing = st.sidebar.selectbox(
-        "Filing status",
-        options=["single", "married"],
-        index=0,
-        key="german_tax_filing",
-        help="Determines the Sparerpauschbetrag: 1,000 EUR for single filers, 2,000 EUR for married filing jointly.",
+# --- 9. German Tax (optional expander) ---
+with st.sidebar.expander("German Tax (Optional)"):
+    german_tax_enabled = st.toggle(
+        "Show German tax annotations", value=True, key="german_tax_enabled",
+        help="Adds German InvStG analysis to the Trade Plan: Teilfreistellung rates, PFIC risk warnings, and Sparerpauschbetrag reminder.",
     )
-
-# --- 9. Account Types ---
-with st.sidebar.expander("Account Types"):
-    acct_mapping_text = ""
-    for substr, acct_type in DEFAULT_ACCOUNT_MAPPINGS.items():
-        acct_mapping_text += f"{substr}: {acct_type}\n"
-    acct_yaml = st.text_area(
-        "Account substring -> type",
-        value=acct_mapping_text,
-        height=150,
-        key="acct_mapping_input",
-        help="Maps substrings in Fidelity account names to tax treatment. If an account name contains 'ROTH', it's classified as roth_ira. This affects sell priority (retirement accounts are sold first) and tax impact calculations.",
-    )
-
-# --- 10. Advanced ---
-with st.sidebar.expander("Advanced"):
-    st.caption("Raw unified config YAML (read-only view / apply override)")
-
-    # Build current config from widgets
-    _current_unified = {
-        "allocation": {ac: alloc_values[ac] for ac in ASSET_CLASSES},
-        "rebalance": {
-            "threshold_pct": threshold_pct,
-            "min_trade_value": min_trade_value,
-        },
-        "cash": {
-            "eurusd_fx": float(manual_fx),
-            "investable": {"eur": float(invest_eur), "usd": float(invest_usd)},
-            "emergency": {"eur": float(emergency_eur), "usd": float(emergency_usd)},
-        },
-        "tax": {"enabled": tax_enabled},
-        "output": {
-            "show_only_actionable_trades": show_only_actionable,
-            "sort_order": [s.value for s in sort_order],
-            "precision": {"currency": currency_precision, "pct": 2},
-        },
-    }
-
-    # Parse account mappings
-    try:
-        parsed_acct = yaml.safe_load(acct_yaml)
-        if isinstance(parsed_acct, dict):
-            _current_unified["accounts"] = parsed_acct
-    except Exception:
-        pass
-
-    unified_yaml_str = yaml.dump(_current_unified, default_flow_style=False, sort_keys=False)
-    advanced_yaml = st.text_area(
-        "Unified YAML",
-        value=unified_yaml_str,
-        height=300,
-        key="advanced_yaml",
-    )
-    apply_advanced = st.button("Apply YAML", key="apply_advanced")
+    german_tax_filing = "single"
+    if german_tax_enabled:
+        german_tax_filing = st.selectbox(
+            "Filing status",
+            options=["single", "married"],
+            index=0,
+            key="german_tax_filing",
+            help="Single filers: \u20ac1,000 Sparerpauschbetrag. Married: \u20ac2,000.",
+        )
 
 # --- Sidebar footer ---
 st.sidebar.divider()
@@ -433,28 +530,8 @@ def _build_targets() -> list[AllocationTarget]:
     ]
 
 
-def _build_config() -> tuple[RebalanceConfig, list[str]]:
-    """Build RebalanceConfig from sidebar widgets, including account mappings.
-
-    Returns (config, errors).
-    """
-    account_mappings: dict[str, AccountType] = {}
-    errors: list[str] = []
-    try:
-        parsed_acct = yaml.safe_load(acct_yaml)
-        if isinstance(parsed_acct, dict):
-            valid_types = {e.value for e in AccountType}
-            for substr, acct_type_str in parsed_acct.items():
-                if acct_type_str in valid_types:
-                    account_mappings[substr] = AccountType(acct_type_str)
-                else:
-                    errors.append(
-                        f"Unknown account type '{acct_type_str}' for '{substr}'. "
-                        f"Valid types: {', '.join(sorted(valid_types))}"
-                    )
-    except Exception as e:
-        errors.append(f"Failed to parse account type mappings: {e}")
-
+def _build_config(account_mappings: dict[str, AccountType]) -> tuple[RebalanceConfig, list[str]]:
+    """Build RebalanceConfig from sidebar widgets and pre-built account mappings."""
     config = RebalanceConfig(
         threshold_pct=Decimal(str(threshold_pct)),
         threshold_relative_pct=Decimal(str(threshold_relative_pct)),
@@ -464,7 +541,7 @@ def _build_config() -> tuple[RebalanceConfig, list[str]]:
         cash_to_invest=Decimal("0"),
         account_mappings=account_mappings,
     )
-    return config, errors
+    return config, []
 
 
 def _parse_lots_data(positions: list[Position]) -> tuple[list[str], list[str]]:
@@ -489,22 +566,18 @@ def _parse_lots_data(positions: list[Position]) -> tuple[list[str], list[str]]:
     return lot_warnings, lot_errors
 
 
-def _load_all():
+def _load_all(mapping: dict, account_mappings: dict):
     """Parse all inputs and return (positions, targets, mapping, config, output_config, bank_positions, recent_transactions)."""
     if csv_path is None:
         raise ValueError("No positions CSV provided. Upload a file or check 'Use example CSV'.")
 
-    positions = parse_fidelity_csv(csv_path)
+    positions = parse_fidelity_csv(csv_path, account_mappings if account_mappings else None)
     if not positions:
         raise ValueError("No positions found in CSV. Check the file format.")
 
     targets = _build_targets()
 
-    # Mapping
-    map_path = _save_temp(mapping_text, ".yaml")
-    mapping = load_mapping(map_path)
-
-    config, acct_map_errors = _build_config()
+    config, acct_map_errors = _build_config(account_mappings)
 
     # Build bank cash positions using new CashConfig
     eur_usd_rate = Decimal(str(manual_fx))
@@ -574,24 +647,19 @@ if not st.session_state.dismiss_welcome:
             "**Welcome!** This tool analyzes your Fidelity portfolio and generates a "
             "step-by-step rebalance trade plan. Upload a positions CSV or use the "
             "example data to get started.\n\n"
-            "**Sidebar options (left panel):**\n"
-            "- **Portfolio Data** --- Upload your Fidelity CSV or use the example\n"
-            "- **Target Allocation** --- Set your desired asset class mix (must sum to 100%)\n"
-            "- **Ticker Mapping** --- Maps each ticker to an asset class. Add any tickers "
-            "from your portfolio that aren't already listed\n"
-            "- **Rebalance Settings** --- Drift thresholds and minimum trade size\n"
-            "- **Tax** --- Enable tax-aware trading, upload transaction history for wash sale "
-            "detection, or add tax lot data for lot-level selling\n"
-            "- **External Cash** --- Add bank cash (investable or emergency) to include in "
-            "the portfolio total\n\n"
-            "**Getting started:** The example portfolio is loaded by default --- click the "
+            "**Sidebar guide (left panel):**\n"
+            "- **1. Portfolio Data** — Upload your Fidelity CSV or use the example\n"
+            "- **2. Your Accounts** — Match account names to their tax type (Roth, IRA, etc.)\n"
+            "- **3. Target Mix** — Set your desired allocation (must sum to 100%)\n"
+            "- **4. Fund Classification** — Tell the tool what each fund is. "
+            "Add any funds from your CSV that aren't already listed\n"
+            "- **5. Rebalance Settings** — Drift thresholds and minimum trade size\n"
+            "- **6. Tax** — Enable tax-aware trading and upload lot or transaction data\n"
+            "- **7. External Cash** — Add bank cash or emergency fund amounts\n\n"
+            "**Getting started:** The example portfolio is loaded by default — click the "
             "**Rebalance Analysis** tab to see it in action.\n\n"
-            "**Privacy note:** If you upload your own data, your CSV may contain account "
-            "names and numbers. This tool runs entirely in your browser session and "
-            "**nothing is stored or transmitted**. However, if you want to be extra cautious, "
-            "you can edit your CSV before uploading to remove or replace account names "
-            "and account numbers (the tool only needs the ticker symbols, quantities, "
-            "prices, and values to work).",
+            "**Privacy note:** Your CSV is never stored or transmitted. "
+            "Everything runs in your browser session.",
         )
         if st.button("Dismiss", key="dismiss_welcome_btn"):
             st.session_state.dismiss_welcome = True
@@ -604,7 +672,7 @@ tab_overview, tab_rebalance, tab_trades, tab_consolidation, tab_projection = st.
 
 # Try to load data
 try:
-    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings, lot_errors = _load_all()
+    positions, targets, mapping, config, oc, bank_positions, recent_txns, lot_warnings, lot_errors = _load_all(mapping, account_mappings)
     all_positions = positions + bank_positions
     data_ok = True
 except Exception as e:
