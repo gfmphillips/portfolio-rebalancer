@@ -9,7 +9,7 @@ import streamlit as st
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
-from rebalancer.engine import CashPools, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, project_positions, rebalance
+from rebalancer.engine import CashPools, EMERGENCY_TICKERS, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, project_positions, rebalance
 from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
 from rebalancer.german_tax import annotate_trades, generate_summary
 from rebalancer.models import (
@@ -721,7 +721,8 @@ with tab_rebalance:
         st.error(f"Cannot load data: {data_error}")
     else:
         metadata = build_run_metadata(eurusd_fx=Decimal(str(manual_fx)))
-        result = rebalance(all_positions, targets, mapping, config, metadata=metadata, recent_transactions=recent_txns)
+        rebalance_positions = [p for p in all_positions if p.ticker not in EMERGENCY_TICKERS]
+        result = rebalance(rebalance_positions, targets, mapping, config, metadata=metadata, recent_transactions=recent_txns)
         for w in lot_warnings:
             result.warnings.append(w)
         st.session_state.result = result
@@ -1250,8 +1251,9 @@ with tab_projection:
                 result.trades, config.min_trade_value, show_only_actionable
             )
             projected = project_positions(all_positions, display_trades)
+            projected_rebalanceable = [p for p in projected if p.ticker not in EMERGENCY_TICKERS]
             proj_total, proj_by_class, proj_pct_by_class = _compute_allocation(
-                projected, mapping, pct_precision=oc.precision.pct
+                projected_rebalanceable, mapping, pct_precision=oc.precision.pct
             )
 
             st.subheader("Projected Portfolio After All Trades")
