@@ -175,6 +175,17 @@ def rebalance(
             f"Unmapped tickers (excluded from rebalancing): {', '.join(sorted(unmapped_tickers))}"
         )
 
+    # Warn about preferred tickers that aren't held and have no price in the mapping.
+    # Without a price, buys cannot be routed to them.
+    held_tickers = {p.ticker for p in positions}
+    for ticker, info in mapping.items():
+        if info.preferred and ticker not in held_tickers and info.price is None:
+            warnings.append(
+                f"Preferred ticker {ticker} ({info.asset_class}) is not in your portfolio "
+                f"and has no 'price' set in the mapping. Buys cannot be routed to it. "
+                f"Add 'price: <current_price>' to {ticker} in mapping.yaml."
+            )
+
     current_allocation: dict[str, Decimal] = {}
     for cls, val in value_by_class.items():
         current_allocation[cls] = _quantize_pct(val / total_value * HUNDRED)
@@ -365,9 +376,16 @@ def _pick_buy_ticker(
     tax_adv = [c for c in candidates if c.account_type in TAX_ADVANTAGED]
     pool = tax_adv if tax_adv else candidates
     preferred = [c for c in pool if mapping.get(c.ticker) and mapping[c.ticker].preferred]
-    best = preferred[0] if preferred else pool[0]
+    if preferred:
+        best = preferred[0]
+        return best.ticker, best.price, best
 
-    return best.ticker, best.price, best
+    # No preferred ticker held — check mapping for one with a price set
+    for ticker, info in mapping.items():
+        if info.asset_class == asset_class and info.preferred and info.price is not None:
+            return ticker, info.price, pool[0]
+
+    return pool[0].ticker, pool[0].price, pool[0]
 
 
 _EMERGENCY_TICKERS = {"CASH-USD-EMERGENCY", "CASH-EUR-EMERGENCY"}
@@ -434,12 +452,21 @@ def _allocate_buys(
             ref_ticker = p.ticker
             ref_price = p.price
             best_ref_value = p.market_value
+    preferred_found = False
     for p in class_positions:
         ticker_info = mapping.get(p.ticker)
         if ticker_info and ticker_info.preferred:
             ref_ticker = p.ticker
             ref_price = p.price
+            preferred_found = True
             break
+    if not preferred_found:
+        # Preferred ticker not held — check mapping for one with a price set
+        for ticker, info in mapping.items():
+            if info.asset_class == asset_class and info.preferred and info.price is not None:
+                ref_ticker = ticker
+                ref_price = info.price
+                break
 
     # Deduplicate by account: pick largest position per account
     best_by_account: dict[str, Position] = {}

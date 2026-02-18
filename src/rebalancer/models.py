@@ -50,6 +50,7 @@ class TickerMapping(BaseModel):
     domicile: str = "US"
     preferred: bool = False
     consolidate_to: str | None = None
+    price: Decimal | None = None  # fallback price for preferred tickers not yet held
     german_fund_category: str | None = None  # "aktienfonds", "mischfonds", etc.
     is_accumulating: bool | None = None  # None = unknown
 

@@ -50,12 +50,14 @@ def load_mapping(path: Path) -> dict[str, TickerMapping]:
         if isinstance(info, str):
             mappings[ticker] = TickerMapping(asset_class=info)
         else:
+            raw_price = info.get("price", None)
             mappings[ticker] = TickerMapping(
                 asset_class=info["asset_class"],
                 similar_tickers=info.get("similar", []),
                 domicile=info.get("domicile", "US"),
                 preferred=info.get("preferred", False),
                 consolidate_to=info.get("consolidate_to", None),
+                price=Decimal(str(raw_price)) if raw_price is not None else None,
                 german_fund_category=info.get("german_fund_category", None),
                 is_accumulating=info.get("is_accumulating", None),
             )
