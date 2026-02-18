@@ -244,8 +244,9 @@ else:
 # --- 2. Your Accounts ---
 st.sidebar.header("2. Your Accounts")
 st.sidebar.caption(
-    "The tool matches these keywords against your Fidelity account names to determine "
-    "each account's tax treatment. Use the ➕ button to add new rules."
+    "Each row maps a word in your account name to a tax type. For example, if your account "
+    "is called 'Roth IRA — Individual,' enter 'Roth' and select 'Roth IRA.' The tool uses "
+    "this to decide where to place trades for the best tax outcome. Use ➕ to add new rules."
 )
 acct_df_edited = st.sidebar.data_editor(
     pd.DataFrame(st.session_state.acct_rules),
@@ -304,8 +305,9 @@ else:
 # --- 4. Fund Classification ---
 st.sidebar.header("4. Fund Classification")
 st.sidebar.caption(
-    "Tell us what each fund is. Use the ➕ button to add any funds from your CSV "
-    "that aren't listed. Unmapped funds will appear as warnings after loading."
+    "Classify each fund so the tool knows what asset class it represents and where to direct "
+    "new money. If a fund from your portfolio is missing, add it with ➕. Any fund left "
+    "unclassified will appear as a warning in the results."
 )
 ticker_df_edited = st.sidebar.data_editor(
     pd.DataFrame(st.session_state.ticker_rows),
@@ -323,15 +325,15 @@ ticker_df_edited = st.sidebar.data_editor(
         ),
         "Target Fund?": st.column_config.CheckboxColumn(
             "Target Fund?",
-            help="Check this if this is your preferred long-term holding for this asset class. New buys will go here.",
+            help="Mark this fund as your preferred long-term holding for its asset class. When the tool needs to buy more of that asset class, it will buy this fund. Only one fund per asset class should be marked.",
         ),
         "Consolidate Into": st.column_config.TextColumn(
             "Consolidate Into",
-            help="If you want to move away from this fund over time, enter the target fund ticker here (e.g. enter VTI for FXAIX).",
+            help="If you're phasing out this fund, type the ticker of the replacement fund here (e.g., type VTI if you want to gradually shift out of FXAIX). The tool will sell this fund when rebalancing instead of your target fund.",
         ),
         "Price ($)": st.column_config.NumberColumn(
             "Price ($)",
-            help="Current share price. Only needed for target funds you don't currently hold in your portfolio.",
+            help="The current share price of this fund. Only required if this is a target fund that you do not yet own — the tool needs a price to estimate how many shares to buy.",
             min_value=0.0,
             format="%.2f",
         ),
@@ -347,37 +349,37 @@ mapping = _build_mapping_from_rows(st.session_state.ticker_rows)
 # --- 5. Rebalance Settings ---
 st.sidebar.header("5. Rebalance Settings")
 threshold_pct = st.sidebar.number_input(
-    "Drift threshold (percentage points)",
+    "Absolute drift trigger (percentage points)",
     min_value=0.0,
     max_value=50.0,
     value=5.0,
     step=0.5,
     key="threshold_pct",
-    help="Trigger a rebalance when any asset class drifts this many percentage points from its target. Example: with 5%, a 48% target triggers at 43% or 53%.",
+    help="Rebalance when any asset class moves more than this many percentage points from its target. Example: if your US equity target is 40% and you set this to 5, the tool will recommend trades if US equity falls below 35% or rises above 45%.",
 )
 threshold_relative_pct = st.sidebar.number_input(
-    "Drift threshold (relative %)",
+    "Relative drift trigger (%)",
     min_value=0.0,
     max_value=100.0,
     value=20.0,
     step=1.0,
     key="threshold_relative_pct",
-    help="Trigger a rebalance when drift exceeds this percentage of the target itself. Example: with 20%, a 20% target triggers at 16% or 24%. Either threshold being breached triggers a rebalance.",
+    help="Rebalance when drift exceeds this share of the target's own size. Example: if your bond target is 20% and you set this to 20, the tool triggers at below 16% or above 24%. A trade is recommended if EITHER this threshold OR the absolute threshold above is breached — whichever is hit first.",
 )
 min_trade_value = st.sidebar.number_input(
-    "Minimum trade size ($)",
+    "Ignore trades smaller than ($)",
     min_value=0.0,
     value=500.0,
     step=50.0,
     key="min_trade_value",
-    help="Skip any individual trade smaller than this amount.",
+    help="Any trade smaller than this dollar amount will be left out of the plan. This prevents the tool from recommending trivial buys that aren't worth the effort. Typical values: $100–$500.",
 )
 
 # --- 6. Tax ---
 st.sidebar.header("6. Tax")
 tax_enabled = st.sidebar.toggle(
-    "Tax-aware trading", value=False, key="tax_enabled",
-    help="Prioritizes selling in retirement accounts first (no tax), prefers selling at a loss in taxable accounts (tax-loss harvesting), and detects potential wash sales.",
+    "Tax-smart trading", value=False, key="tax_enabled",
+    help="When on, the tool places sells in retirement accounts first (no capital gains tax there), prefers selling losing positions in taxable accounts to offset gains (tax-loss harvesting), and flags trades that could trigger a wash sale rule violation. Recommended for most investors.",
 )
 uploaded_transactions = st.sidebar.file_uploader(
     "Transaction history CSV (optional)",
@@ -411,14 +413,14 @@ fidelity_lots_paste = st.sidebar.text_area(
 st.sidebar.header("7. External Cash")
 
 st.sidebar.subheader("Investable Cash")
-st.sidebar.caption("Bank cash you want to invest. Counted in your allocation and can fund buys.")
+st.sidebar.caption("Cash sitting in a bank account that you're ready to put to work. The tool includes this in your total portfolio and uses it to fund buy trades.")
 invest_usd = st.sidebar.number_input(
     "US bank cash ($)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="invest_usd",
-    help="Cash in a US bank account ready to invest. Brokerage cash (SPAXX, FDRXX) is already in your CSV.",
+    help="Cash in a US bank or checking account that you want to invest. Do not enter your Fidelity brokerage cash here — money market positions like SPAXX and FDRXX are already captured in your CSV.",
 )
 invest_eur = st.sidebar.number_input(
     "European bank cash (\u20ac)",
@@ -426,18 +428,18 @@ invest_eur = st.sidebar.number_input(
     value=0.0,
     step=100.0,
     key="invest_eur",
-    help="Cash in a European bank account ready to invest.",
+    help="Cash in a European bank account that you want to invest.",
 )
 
 st.sidebar.subheader("Emergency Fund")
-st.sidebar.caption("Your emergency fund. Shown in your portfolio total but never touched by the rebalancer.")
+st.sidebar.caption("Your emergency fund. Included in your total portfolio value so your allocation picture is accurate, but the tool will never recommend spending it.")
 emergency_usd = st.sidebar.number_input(
     "US emergency fund ($)",
     min_value=0.0,
     value=0.0,
     step=100.0,
     key="emergency_usd",
-    help="US emergency fund. Visible in your portfolio overview but excluded from all rebalancing calculations.",
+    help="Emergency savings in a US bank. Visible in your portfolio overview but excluded from all rebalancing calculations.",
 )
 emergency_eur = st.sidebar.number_input(
     "European emergency fund (\u20ac)",
@@ -445,7 +447,7 @@ emergency_eur = st.sidebar.number_input(
     value=0.0,
     step=100.0,
     key="emergency_eur",
-    help="European emergency fund. Visible in your portfolio overview but excluded from all rebalancing calculations.",
+    help="Emergency savings in a European bank. Visible in your portfolio overview but excluded from all rebalancing calculations.",
 )
 
 use_live_fx = st.sidebar.checkbox(
@@ -644,22 +646,23 @@ if not st.session_state.accepted_disclaimer:
 if not st.session_state.dismiss_welcome:
     with st.container():
         st.info(
-            "**Welcome!** This tool analyzes your Fidelity portfolio and generates a "
-            "step-by-step rebalance trade plan. Upload a positions CSV or use the "
-            "example data to get started.\n\n"
-            "**Sidebar guide (left panel):**\n"
+            "**Welcome to Portfolio Rebalancer.** This tool looks at what you own today, "
+            "compares it to your target mix, and tells you exactly which trades to make — "
+            "and in what order.\n\n"
+            "**How to use this tool** (work top to bottom in the left panel):\n"
             "- **1. Portfolio Data** — Upload your Fidelity CSV or use the example\n"
             "- **2. Your Accounts** — Match account names to their tax type (Roth, IRA, etc.)\n"
-            "- **3. Target Mix** — Set your desired allocation (must sum to 100%)\n"
-            "- **4. Fund Classification** — Tell the tool what each fund is. "
-            "Add any funds from your CSV that aren't already listed\n"
-            "- **5. Rebalance Settings** — Drift thresholds and minimum trade size\n"
-            "- **6. Tax** — Enable tax-aware trading and upload lot or transaction data\n"
+            "- **3. Target Mix** — Set your desired long-term allocation (must sum to 100%)\n"
+            "- **4. Fund Classification** — Classify each fund so the tool knows how to handle it. "
+            "Add any funds from your CSV that aren't listed\n"
+            "- **5. Rebalance Settings** — Adjust how sensitive the rebalance trigger is\n"
+            "- **6. Tax** — Enable tax-smart trading and upload lot or transaction data\n"
             "- **7. External Cash** — Add bank cash or emergency fund amounts\n\n"
-            "**Getting started:** The example portfolio is loaded by default — click the "
-            "**Rebalance Analysis** tab to see it in action.\n\n"
-            "**Privacy note:** Your CSV is never stored or transmitted. "
-            "Everything runs in your browser session.",
+            "**Getting started:** The example portfolio is pre-loaded. Click the "
+            "**Rebalance Analysis** tab to see a sample trade plan — then swap in your "
+            "own CSV when ready.\n\n"
+            "**Your data never leaves your computer.** The file is read locally in your "
+            "browser and is not uploaded anywhere.",
         )
         if st.button("Dismiss", key="dismiss_welcome_btn"):
             st.session_state.dismiss_welcome = True
@@ -667,7 +670,7 @@ if not st.session_state.dismiss_welcome:
 
 # Tabs
 tab_overview, tab_rebalance, tab_trades, tab_consolidation, tab_projection = st.tabs(
-    ["Portfolio Overview", "Rebalance Analysis", "Trade Plan", "Consolidation", "Post-Trade Projection"]
+    ["1. Your Portfolio", "2. Rebalance Analysis", "3. Trade Plan", "4. Fund Consolidation", "5. After Trades"]
 )
 
 # Try to load data
@@ -697,11 +700,11 @@ with tab_overview:
         # KPI row
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Portfolio Value", _format_currency(total_value, cur_prec),
-                     help="Sum of all position market values across all accounts, including bank cash if enabled. This is the denominator used to calculate allocation percentages.")
+                     help="The combined current market value of every position in your CSV plus any bank cash you entered in the sidebar. This is the baseline the tool rebalances against.")
         col2.metric("Accounts", len({p.account_name for p in all_positions}),
-                     help="Number of distinct brokerage accounts detected in the CSV. Each account has a tax type (taxable, Roth, IRA, etc.) that affects trade priority.")
+                     help="Number of distinct brokerage accounts found in your CSV. Each account has a tax type (Taxable, Roth, IRA, etc.) that affects which accounts get traded first.")
         col3.metric("Positions", len(all_positions),
-                     help="Total number of individual holdings. Includes cash positions (SPAXX, FDRXX) and bank cash if enabled.")
+                     help="Total number of individual holdings across all accounts. Includes cash positions (SPAXX, FDRXX) and any bank cash you entered in the sidebar.")
 
         st.divider()
 
@@ -709,7 +712,7 @@ with tab_overview:
         chart_col1, chart_col2 = st.columns(2)
 
         with chart_col1:
-            st.subheader("Current Allocation")
+            st.subheader("Current Allocation (what you own today)")
             labels = sorted(pct_by_class.keys())
             values = [_dec(pct_by_class[c]) for c in labels]
             fig = go.Figure(
@@ -719,7 +722,7 @@ with tab_overview:
             st.plotly_chart(fig, width="stretch")
 
         with chart_col2:
-            st.subheader("Target Allocation")
+            st.subheader("Target Allocation (your goal mix)")
             tgt_map = {}
             for t in targets:
                 tgt_map[t.asset_class] = _dec(t.target_pct)
@@ -736,7 +739,7 @@ with tab_overview:
         pos_rows = []
         for p in all_positions:
             ticker_info = mapping.get(p.ticker)
-            asset_class = ticker_info.asset_class if ticker_info else "unmapped"
+            asset_class = ticker_info.asset_class if ticker_info else "Not classified — add in sidebar ↑"
             gain_loss = None
             if p.cost_basis_total is not None:
                 gain_loss = p.market_value - p.cost_basis_total
@@ -800,7 +803,7 @@ with tab_rebalance:
                 st.warning(w)
 
         st.subheader("Allocation vs Target")
-        st.caption("Drift = Current % minus Target %. Positive means overweight (sell), negative means underweight (buy). The orange dashed lines show the absolute threshold band.")
+        st.caption("Drift shows how far each asset class has moved from your target. A positive bar means you own too much (a candidate to sell). A negative bar means you own too little (a candidate to buy). The dashed orange lines show where a rebalance is triggered.")
 
         all_classes = sorted(
             set(result.current_allocation.keys())
@@ -856,9 +859,9 @@ with tab_rebalance:
         st.dataframe(alloc_rows, width="stretch", hide_index=True)
         st.caption("**Drift (abs)** = percentage point difference from target. **Drift (rel)** = absolute drift as a % of the target itself. Either exceeding its threshold triggers a rebalance for that class.")
 
-        # Decision checklist
-        st.subheader("Decision Checklist")
-        st.caption("Summary of whether action is needed and what the tax implications are. Rebalancing triggers when EITHER the absolute OR relative drift band is breached.")
+        # Action Summary
+        st.subheader("Action Summary")
+        st.caption("This checklist summarizes whether any trades are needed today. A rebalance is recommended the moment any asset class crosses either drift threshold — whichever is hit first.")
 
         # Which classes breach bands?
         breached = []
@@ -877,9 +880,9 @@ with tab_rebalance:
                 breached.append(f"**{cls}** ({', '.join(reasons)})")
 
         if breached:
-            st.markdown(f"Bands breached: {', '.join(breached)}")
+            st.markdown(f"Rebalancing triggered for: {', '.join(breached)}")
         else:
-            st.success("All asset classes within both drift bands.")
+            st.success("No action needed — all asset classes are within your drift thresholds. Check back after your next contribution or after significant market movement.")
 
         # Idle cash
         cash_positions = [p for p in all_positions if mapping.get(p.ticker) and mapping[p.ticker].asset_class == "cash"]
@@ -899,7 +902,11 @@ with tab_rebalance:
                 taxable_sells = [t for t in taxable_trades if t.action == "SELL" and t.estimated_gain_loss is not None]
                 net_gain = sum(_dec(t.estimated_gain_loss) for t in taxable_sells)
                 if net_gain > 0:
-                    st.warning(f"Taxable sells have estimated net gain of {_format_currency(Decimal(str(net_gain)), cur_prec)}")
+                    st.warning(
+                        f"Heads up: these taxable sells have an estimated net capital gain of "
+                        f"{_format_currency(Decimal(str(net_gain)), cur_prec)}. You may owe taxes "
+                        f"on this amount. Review the estimated tax impact below before executing."
+                    )
 
         # Stacked bar: current vs target
         fig4 = go.Figure()
@@ -931,19 +938,18 @@ with tab_rebalance:
         if tax_enabled:
             ti = result.tax_impact
             if ti.taxable_trades_count > 0:
-                st.subheader("Estimated Tax Impact (Taxable Accounts)")
+                st.subheader("Estimated Capital Gains Tax Impact (Taxable Accounts Only)")
                 ti_col1, ti_col2, ti_col3 = st.columns(3)
                 ti_col1.metric("Estimated Gains", _format_currency(ti.estimated_total_gains, cur_prec),
-                               help="Total estimated capital gains from sells in taxable accounts. Computed as (market value - cost basis) x shares sold. Retirement account sells are excluded since they have no tax impact.")
+                               help="Total estimated profit from sells in taxable accounts, computed as (market value − cost basis) × shares sold. This amount may increase your tax bill for the year. Retirement account sells are excluded — no capital gains tax there.")
                 ti_col2.metric("Estimated Losses", _format_currency(ti.estimated_total_losses, cur_prec),
-                               help="Total estimated capital losses from sells in taxable accounts. Losses can offset gains and reduce your tax bill. Up to $3,000 of net losses can offset ordinary income per year.")
-                net_delta = "positive" if ti.estimated_net > 0 else "negative" if ti.estimated_net < 0 else None
+                               help="Total estimated losses from sells in taxable accounts. Losses can offset gains and reduce your tax bill — this is tax-loss harvesting in action. Up to $3,000 of net losses can also offset ordinary income per year.")
                 ti_col3.metric(
                     "Net",
                     _format_currency(ti.estimated_net, cur_prec),
                     delta=f"{_format_currency(ti.estimated_net, cur_prec)} taxable" if ti.estimated_net != 0 else None,
                     delta_color="inverse",
-                    help="Gains minus losses. Positive = you owe taxes on this amount. Negative = you have a tax-loss harvesting benefit.",
+                    help="Gains minus losses. A positive number means a net taxable event this year. A negative number means you have harvested more losses than gains — a potential tax benefit.",
                 )
 
 
@@ -992,8 +998,8 @@ with tab_trades:
             # --- How-to ---
             st.info(
                 "**How to execute:** Work through each step in order. "
-                "Complete all **sells** first to free up cash, then execute the **buys**. "
-                "Steps are grouped by account so you can log into one account, complete its trades, then move on."
+                "Finish every **sell** before placing any **buy** — sells free up the cash that funds the buys. "
+                "Steps are grouped by account: complete all trades in one account before moving to the next."
             )
 
             # --- Build cash pool tracking ---
@@ -1027,7 +1033,7 @@ with tab_trades:
                     "Pool": "Taxable (shared)",
                     "Starting Cash": _format_currency(pools.taxable_pool, cur_prec),
                     "Accounts": ", ".join(taxable_accts) if taxable_accts else "-",
-                    "Note": "Cash moves freely between taxable accounts",
+                    "Note": "Buys in any of your taxable accounts can draw from this shared balance",
                 })
             for acct_name, bal in sorted(pools.tax_adv_pools.items()):
                 if bal > 0:
@@ -1035,7 +1041,7 @@ with tab_trades:
                         "Pool": acct_name,
                         "Starting Cash": _format_currency(bal, cur_prec),
                         "Accounts": acct_name,
-                        "Note": "Isolated — can only buy within this account",
+                        "Note": "This account's cash stays within that account — no cross-account transfers",
                     })
             if pool_rows:
                 st.dataframe(pool_rows, width="stretch", hide_index=True)
@@ -1046,7 +1052,7 @@ with tab_trades:
             if sell_steps:
                 st.divider()
                 st.markdown(f"### Phase 1: Sells ({len(sell_steps)} trades across {len(sell_accounts)} accounts)")
-                st.caption("Sell overweight positions to free up cash for rebalancing. Proceeds are credited to the account's cash pool.")
+                st.caption("Sell positions that have grown beyond your target allocation. The cash you raise here is what funds the buys in Phase 2. Proceeds stay within the same account.")
 
                 current_account = None
                 for s in sell_steps:
@@ -1093,7 +1099,7 @@ with tab_trades:
             if buy_steps:
                 st.divider()
                 st.markdown(f"### Phase 2: Buys ({len(buy_steps)} trades across {len(buy_accounts)} accounts)")
-                st.caption("Use the freed cash to buy into underweight positions. Each buy draws from its account's cash pool.")
+                st.caption("Buy into asset classes that are below your target. Each buy uses cash from within the same account — no transfers between accounts are needed.")
 
                 current_account = None
                 for s in buy_steps:
@@ -1238,20 +1244,20 @@ with tab_consolidation:
         consolidation = analyze_consolidation(all_positions, mapping)
 
         # Progress metric
-        st.subheader("Three-Fund Consolidation Progress")
-        st.caption("Tracks your progress from multiple legacy funds toward a simplified end-state portfolio. Cash positions are excluded from this calculation since they are not part of the consolidation target.")
+        st.subheader("Portfolio Simplification Progress")
+        st.caption("Tracks your progress from multiple funds toward a simplified, lower-maintenance portfolio. The goal is to gradually move everything into your target long-term funds. Cash positions are excluded.")
         col1, col2 = st.columns(2)
         col1.metric(
-            "End-State Funds",
+            "Target Funds",
             _format_currency(consolidation.end_state_value, cur_prec),
             f"{consolidation.end_state_pct}%",
-            help="Value held in funds marked 'preferred: true' in the mapping (e.g. VTI, VXUS, BND). These are your target holdings. The goal is to get this to 100%.",
+            help="Value held in your preferred long-term funds (marked as 'Target Fund' in Your Funds). These are what you're building toward. The goal is to get this to 100%.",
         )
         col2.metric(
-            "Legacy Funds",
+            "Funds to Phase Out",
             _format_currency(consolidation.legacy_value, cur_prec),
             f"{consolidation.legacy_pct}%",
-            help="Value held in all other non-cash funds. These have a 'consolidate_to' target in the mapping. Consolidate them over time as tax-efficient opportunities arise.",
+            help="Value still held in older or duplicate funds. These have a consolidation target set in Your Funds. Move them over time as tax-efficient opportunities arise.",
         )
 
         # Progress bar
@@ -1259,7 +1265,7 @@ with tab_consolidation:
             st.progress(_dec(consolidation.end_state_pct) / 100.0, text=f"{consolidation.end_state_pct}% consolidated")
 
         if not consolidation.opportunities:
-            st.success("All non-cash positions are in end-state funds.")
+            st.success("Your portfolio is fully consolidated — every position is already in one of your target long-term funds. Nothing to do here.")
         else:
             st.divider()
             st.subheader("Consolidation Opportunities")
@@ -1269,8 +1275,8 @@ with tab_consolidation:
             wait_opps = [o for o in consolidation.opportunities if not o.safe_to_consolidate]
 
             if safe_opps:
-                st.markdown("#### Free to Execute")
-                st.caption("These positions can be consolidated now with no tax cost. Retirement accounts have no tax on sells. Taxable positions at a loss generate a tax benefit when sold.")
+                st.markdown("#### Ready to Execute — No Tax Cost")
+                st.caption("These positions can be consolidated now with no tax cost. Retirement accounts have no capital gains tax on sells. Taxable positions at a loss generate a tax benefit when sold.")
                 safe_rows = []
                 for opp in safe_opps:
                     gl_str = _format_currency(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
@@ -1278,15 +1284,15 @@ with tab_consolidation:
                         "Ticker": opp.ticker,
                         "Account": opp.account_name,
                         "Value": _format_currency(opp.market_value, cur_prec),
-                        "Consolidate To": opp.consolidate_to,
+                        "Move Into": opp.consolidate_to,
                         "Gain/Loss": gl_str,
                         "Reason": opp.reason,
                     })
                 st.dataframe(safe_rows, width="stretch", hide_index=True)
 
             if wait_opps:
-                st.markdown("#### Wait")
-                st.caption("These positions are at a gain in taxable accounts. Selling would trigger capital gains tax. Wait for a market dip (position goes to a loss) or a spending need where you'd sell anyway.")
+                st.markdown("#### Hold Off — Taxable Gain")
+                st.caption("These positions are at a gain in taxable accounts. Selling now would trigger capital gains tax. Consider waiting for a market dip or a moment when you need to sell anyway.")
                 wait_rows = []
                 for opp in wait_opps:
                     gl_str = _format_currency(opp.estimated_gain_loss, cur_prec) if opp.estimated_gain_loss is not None else "-"
@@ -1294,7 +1300,7 @@ with tab_consolidation:
                         "Ticker": opp.ticker,
                         "Account": opp.account_name,
                         "Value": _format_currency(opp.market_value, cur_prec),
-                        "Consolidate To": opp.consolidate_to,
+                        "Move Into": opp.consolidate_to,
                         "Gain/Loss": gl_str,
                         "Reason": opp.reason,
                     })
@@ -1321,8 +1327,8 @@ with tab_projection:
                 projected_rebalanceable, mapping, pct_precision=oc.precision.pct
             )
 
-            st.subheader("Projected Portfolio After All Trades")
-            st.caption("Estimates your portfolio state after executing every trade in the Trade Plan. Values are approximate — based on current prices and estimated share counts.")
+            st.subheader("What Your Portfolio Will Look Like After These Trades")
+            st.caption("A preview based on the trade plan above. Actual results will vary slightly due to price changes between now and when you execute the trades.")
 
             col1, col2, col3 = st.columns(3)
             col1.metric(
@@ -1384,7 +1390,7 @@ with tab_projection:
                     "Projected Drift": f"{_dec(projected_drift):+.2f}pp",
                 })
             st.dataframe(proj_rows, width="stretch", hide_index=True)
-            st.caption("**Projected Drift** should be close to 0pp for all classes if the rebalance is fully funded.")
+            st.caption("After these trades, each asset class should be very close to 0% drift. If you still see significant drift for a class, it may mean there wasn't enough cash to fully rebalance it — consider adding more investable cash in the sidebar.")
 
             st.divider()
 
