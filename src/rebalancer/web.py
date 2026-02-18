@@ -497,6 +497,12 @@ min_trade_value = st.sidebar.number_input(
     key="min_trade_value",
     help="Any trade smaller than this dollar amount will be left out of the plan. This prevents the tool from recommending trivial buys that aren't worth the effort. Typical values: $100–$500.",
 )
+whole_shares_only = st.sidebar.checkbox(
+    "Whole shares only",
+    value=False,
+    key="whole_shares_only",
+    help="Round all trade quantities down to the nearest whole share. Enable this if your brokerage does not support fractional ETF shares. Note: rounding may leave a small residual cash balance undeployed.",
+)
 
 # --- 6. Tax ---
 st.sidebar.header("6. Tax")
@@ -676,6 +682,7 @@ def _build_config(account_mappings: dict[str, AccountType]) -> tuple[RebalanceCo
         avoid_gains_in_taxable=tax_enabled,
         cash_to_invest=Decimal("0"),
         account_mappings=account_mappings,
+        whole_shares_only=whole_shares_only,
     )
     return config, []
 
@@ -727,11 +734,12 @@ def _load_all(mapping: dict, account_mappings: dict):
                 # wrong ticker) before it silently affects trade calculations.
                 if p.price and p.price > 0:
                     ratio = float(new_price / p.price)
-                    if ratio < 0.75 or ratio > 1.25:
+                    if ratio < 0.50 or ratio > 1.50:
+                        # Use \$ to prevent Streamlit from interpreting $ as a LaTeX delimiter.
                         price_warnings.append(
-                            f"**{p.ticker}**: live price **${float(new_price):.2f}** differs "
-                            f"**{abs(1 - ratio):.0%}** from your CSV price **${float(p.price):.2f}**. "
-                            "Verify this is correct before placing any trades."
+                            f"**{p.ticker}**: live price **\\${float(new_price):.2f}** differs "
+                            f"**{abs(1 - ratio):.0%}** from your CSV price **\\${float(p.price):.2f}**. "
+                            "This may indicate a wrong ticker or a stock split — verify before trading."
                         )
                 new_mv = (new_price * p.quantity).quantize(Decimal("0.01"))
                 updated.append(p.model_copy(update={"price": new_price, "market_value": new_mv}))

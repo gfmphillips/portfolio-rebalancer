@@ -76,7 +76,9 @@ def _quantize_pct(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _quantize_shares(value: Decimal) -> Decimal:
+def _quantize_shares(value: Decimal, whole_shares: bool = False) -> Decimal:
+    if whole_shares:
+        return value.quantize(Decimal("1"), rounding=ROUND_DOWN)
     return value.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
 
 
@@ -350,7 +352,7 @@ def _allocate_new_cash(
             continue
         ticker, price, account = _pick_buy_ticker(cls, positions, mapping)
         if ticker and price > 0 and account:
-            shares = _quantize_shares(buy_amount / price)
+            shares = _quantize_shares(buy_amount / price, whole_shares=config.whole_shares_only)
             if shares > 0:
                 trades.append(
                     Trade(
@@ -537,7 +539,7 @@ def _allocate_buys(
             continue
         if price <= 0:
             continue  # no price available for this ticker; skip silently (warned at rebalance() level)
-        shares = _quantize_shares(buy_here / price)
+        shares = _quantize_shares(buy_here / price, whole_shares=config.whole_shares_only)
         if shares <= 0:
             continue
         actual_value = (shares * price).quantize(
@@ -687,7 +689,7 @@ def _generate_rebalance_trades(
 
                     lot_value = lot.shares * p.price
                     sellable_value = min(remaining, lot_value)
-                    shares = _quantize_shares(sellable_value / p.price)
+                    shares = _quantize_shares(sellable_value / p.price, whole_shares=config.whole_shares_only)
                     if shares <= 0:
                         continue
                     # Don't sell more than the lot has
@@ -731,7 +733,7 @@ def _generate_rebalance_trades(
             else:
                 # Blended-basis logic (no lot data)
                 sellable_value = min(remaining, p.market_value)
-                shares = _quantize_shares(sellable_value / p.price)
+                shares = _quantize_shares(sellable_value / p.price, whole_shares=config.whole_shares_only)
                 if shares <= 0:
                     continue
                 actual_value = (shares * p.price).quantize(

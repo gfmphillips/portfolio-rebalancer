@@ -184,6 +184,7 @@ class RebalanceConfig(BaseModel):
     avoid_gains_in_taxable: bool = True
     cash_to_invest: Decimal = ZERO
     account_mappings: dict[str, AccountType] = {}
+    whole_shares_only: bool = False  # when True, round all share quantities to whole numbers
 
 
 class ConsolidationOpportunity(BaseModel):
