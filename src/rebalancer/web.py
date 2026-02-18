@@ -71,6 +71,79 @@ def _pie_colors(labels: list[str]) -> list[str]:
         for i, label in enumerate(labels)
     ]
 
+
+# Human-readable names for synthetic cash tickers injected at runtime
+_SYNTHETIC_TICKER_LABELS = {
+    "CASH-USD-INVESTABLE": "US Bank Cash",
+    "CASH-EUR-INVESTABLE": "EUR Bank Cash",
+    "CASH-USD-EMERGENCY": "US Emergency Fund",
+    "CASH-EUR-EMERGENCY": "EUR Emergency Fund",
+}
+
+
+def _build_pie_hover_texts(
+    labels: list[str],
+    positions: list,
+    mapping: dict,
+    precision: int,
+) -> list[str]:
+    """Build per-ticker breakdown hover text for each asset class in a holdings pie chart.
+
+    Returns one HTML string per label, suitable for use as Plotly customdata.
+    """
+    by_class: dict[str, dict[str, Decimal]] = {}
+    for p in positions:
+        info = mapping.get(p.ticker)
+        ac = info.asset_class if info else "unmapped"
+        by_class.setdefault(ac, {})
+        by_class[ac][p.ticker] = by_class[ac].get(p.ticker, Decimal("0")) + p.market_value
+
+    texts = []
+    for label in labels:
+        tickers = by_class.get(label, {})
+        if not tickers:
+            texts.append("No positions")
+            continue
+        bucket_total = sum(tickers.values())
+        lines = []
+        for ticker, value in sorted(tickers.items(), key=lambda x: x[1], reverse=True):
+            pct = float(value / bucket_total * 100) if bucket_total > 0 else 0.0
+            display = _SYNTHETIC_TICKER_LABELS.get(ticker, ticker)
+            lines.append(
+                f"{display}:  {pct:.0f}% of class  ·  {_format_currency(value, precision)}"
+            )
+        texts.append("<br>".join(lines))
+    return texts
+
+
+def _build_target_pie_hover_texts(
+    labels: list[str],
+    mapping: dict,
+) -> list[str]:
+    """Build hover text for the target allocation pie showing which funds map to each class."""
+    by_class: dict[str, list[str]] = {}
+    for ticker, info in mapping.items():
+        if ticker.startswith("CASH-"):  # skip synthetic runtime tickers
+            continue
+        ac = info.asset_class
+        by_class.setdefault(ac, [])
+        if info.preferred:
+            by_class[ac].insert(0, f"{ticker} (your target fund)")
+        elif info.consolidate_to:
+            by_class[ac].append(f"{ticker}  →  {info.consolidate_to}")
+        else:
+            by_class[ac].append(ticker)
+
+    texts = []
+    for label in labels:
+        funds = by_class.get(label, [])
+        if funds:
+            texts.append("Funds in this class:<br>" + "<br>".join(f"  {f}" for f in funds))
+        else:
+            texts.append("No funds mapped to this class")
+    return texts
+
+
 SORT_OPTIONS = {
     "Sells first, largest first": [SortKey.SELLS_FIRST, SortKey.LARGEST_TRADE_FIRST],
     "Buys first, largest first": [SortKey.BUYS_FIRST, SortKey.LARGEST_TRADE_FIRST],
@@ -715,9 +788,15 @@ with tab_overview:
             st.subheader("Current Allocation (what you own today)")
             labels = sorted(pct_by_class.keys())
             values = [_dec(pct_by_class[c]) for c in labels]
-            fig = go.Figure(
-                data=[go.Pie(labels=labels, values=values, hole=0.4, marker=dict(colors=_pie_colors(labels)))]
-            )
+            hover = _build_pie_hover_texts(labels, all_positions, mapping, cur_prec)
+            fig = go.Figure(data=[go.Pie(
+                labels=labels,
+                values=values,
+                hole=0.4,
+                marker=dict(colors=_pie_colors(labels)),
+                customdata=hover,
+                hovertemplate="<b>%{label}</b><br>%{value:.1f}% of portfolio<br><br>%{customdata}<extra></extra>",
+            )])
             fig.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=350)
             st.plotly_chart(fig, width="stretch")
 
@@ -728,9 +807,15 @@ with tab_overview:
                 tgt_map[t.asset_class] = _dec(t.target_pct)
             tgt_labels = sorted(tgt_map.keys())
             tgt_values = [tgt_map[c] for c in tgt_labels]
-            fig2 = go.Figure(
-                data=[go.Pie(labels=tgt_labels, values=tgt_values, hole=0.4, marker=dict(colors=_pie_colors(tgt_labels)))]
-            )
+            tgt_hover = _build_target_pie_hover_texts(tgt_labels, mapping)
+            fig2 = go.Figure(data=[go.Pie(
+                labels=tgt_labels,
+                values=tgt_values,
+                hole=0.4,
+                marker=dict(colors=_pie_colors(tgt_labels)),
+                customdata=tgt_hover,
+                hovertemplate="<b>%{label}</b><br>Target: %{value:.0f}%<br><br>%{customdata}<extra></extra>",
+            )])
             fig2.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=350)
             st.plotly_chart(fig2, width="stretch")
 
@@ -1344,13 +1429,17 @@ with tab_projection:
             # Side-by-side pie charts: current vs projected
             st.subheader("Allocation Shift")
             chart_col1, chart_col2 = st.columns(2)
+            _cur_positions = [p for p in all_positions if p.ticker not in EMERGENCY_TICKERS]
             with chart_col1:
                 st.caption("Current")
                 cur_labels = sorted(result.current_allocation.keys())
                 cur_values = [_dec(result.current_allocation[c]) for c in cur_labels]
+                cur_hover = _build_pie_hover_texts(cur_labels, _cur_positions, mapping, cur_prec)
                 fig_cur = go.Figure(data=[go.Pie(
                     labels=cur_labels, values=cur_values, hole=0.4,
                     marker=dict(colors=_pie_colors(cur_labels)),
+                    customdata=cur_hover,
+                    hovertemplate="<b>%{label}</b><br>%{value:.1f}% of portfolio<br><br>%{customdata}<extra></extra>",
                 )])
                 fig_cur.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
                 st.plotly_chart(fig_cur, width="stretch")
@@ -1358,9 +1447,12 @@ with tab_projection:
                 st.caption("Projected")
                 proj_labels = sorted(proj_pct_by_class.keys())
                 proj_values = [_dec(proj_pct_by_class[c]) for c in proj_labels]
+                proj_hover = _build_pie_hover_texts(proj_labels, projected_rebalanceable, mapping, cur_prec)
                 fig_proj = go.Figure(data=[go.Pie(
                     labels=proj_labels, values=proj_values, hole=0.4,
                     marker=dict(colors=_pie_colors(proj_labels)),
+                    customdata=proj_hover,
+                    hovertemplate="<b>%{label}</b><br>%{value:.1f}% of portfolio<br><br>%{customdata}<extra></extra>",
                 )])
                 fig_proj.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
                 st.plotly_chart(fig_proj, width="stretch")
