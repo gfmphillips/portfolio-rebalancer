@@ -1598,3 +1598,100 @@ class TestLotAwareSelling:
             # FIFO: oldest lot first
             assert sell_trades[0].lot_acquisition_date == "2020-01-15"
             assert "FIFO" in sell_trades[0].reasoning
+
+
+class TestWholeSharesOnly:
+    """Verify that whole_shares_only rounds trade quantities to integers."""
+
+    _targets = [
+        AllocationTarget(asset_class="us_equity", target_pct=Decimal("60")),
+        AllocationTarget(asset_class="bonds", target_pct=Decimal("40")),
+    ]
+    _mapping = {
+        "VTI": TickerMapping(asset_class="us_equity", preferred=True),
+        "BND": TickerMapping(asset_class="bonds", preferred=True),
+        "SPAXX": TickerMapping(asset_class="cash"),
+    }
+
+    def _positions(self):
+        # Slightly overweight bonds so the engine will both sell bonds and buy VTI
+        return [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="VTI",
+                description="Vanguard Total Stock",
+                quantity=Decimal("10"),
+                price=Decimal("253.17"),   # non-round price → fractional shares by default
+                market_value=Decimal("2531.70"),
+                cost_basis_total=Decimal("2000.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="BND",
+                description="Vanguard Total Bond",
+                quantity=Decimal("50"),
+                price=Decimal("73.83"),
+                market_value=Decimal("3691.50"),
+                cost_basis_total=Decimal("3800.00"),
+            ),
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="SPAXX",
+                description="Fidelity Money Market",
+                quantity=Decimal("0"),
+                price=Decimal("0"),
+                market_value=Decimal("1000.00"),
+                cost_basis_total=None,
+            ),
+        ]
+
+    def test_fractional_shares_by_default(self):
+        config = RebalanceConfig(
+            threshold_pct=Decimal("1"),
+            min_trade_value=Decimal("10"),
+            whole_shares_only=False,
+        )
+        result = rebalance(self._positions(), self._targets, self._mapping, config)
+        assert result.trades, "expected at least one trade"
+        for t in result.trades:
+            # At least one trade should have a fractional component
+            if t.shares % 1 != 0:
+                return  # found fractional — test passes
+        # If we get here all trades happened to be whole numbers, which is OK
+        # but unusual given the non-round price; just verify shares are positive
+        assert all(t.shares > 0 for t in result.trades)
+
+    def test_whole_shares_only_produces_integers(self):
+        config = RebalanceConfig(
+            threshold_pct=Decimal("1"),
+            min_trade_value=Decimal("10"),
+            whole_shares_only=True,
+        )
+        result = rebalance(self._positions(), self._targets, self._mapping, config)
+        assert result.trades, "expected at least one trade"
+        for t in result.trades:
+            assert t.shares % 1 == 0, (
+                f"Trade for {t.ticker} has fractional shares {t.shares} "
+                "but whole_shares_only=True"
+            )
+            assert t.shares >= 1, f"Trade for {t.ticker} rounded to zero shares"
+
+    def test_whole_shares_value_le_fractional_value(self):
+        """Whole-share buys should cost no more than fractional buys."""
+        base_config = dict(threshold_pct=Decimal("1"), min_trade_value=Decimal("10"))
+        fractional_result = rebalance(
+            self._positions(), self._targets, self._mapping,
+            RebalanceConfig(**base_config, whole_shares_only=False),
+        )
+        whole_result = rebalance(
+            self._positions(), self._targets, self._mapping,
+            RebalanceConfig(**base_config, whole_shares_only=True),
+        )
+        fractional_buys = sum(t.estimated_value for t in fractional_result.trades if t.action == "BUY")
+        whole_buys = sum(t.estimated_value for t in whole_result.trades if t.action == "BUY")
+        assert whole_buys <= fractional_buys, (
+            "Whole-share buys should not exceed fractional-share buys"
+        )

@@ -1530,9 +1530,11 @@ with tab_projection:
             )
             projected = project_positions(all_positions, display_trades)
             projected_rebalanceable = [p for p in projected if p.ticker not in EMERGENCY_TICKERS]
+            proj_emergency_value = sum(p.market_value for p in projected if p.ticker in EMERGENCY_TICKERS)
             proj_total, proj_by_class, proj_pct_by_class = _compute_allocation(
                 projected_rebalanceable, mapping, pct_precision=oc.precision.pct
             )
+            proj_full_total = proj_total + proj_emergency_value
 
             st.subheader("What Your Portfolio Will Look Like After These Trades")
             st.caption("A preview based on the trade plan above. Actual results will vary slightly due to price changes between now and when you execute the trades.")
@@ -1540,8 +1542,8 @@ with tab_projection:
             col1, col2, col3 = st.columns(3)
             col1.metric(
                 "Projected Total Value",
-                _format_currency(proj_total, cur_prec),
-                help="Total portfolio value after trades. Should be close to current value since rebalancing doesn't add or remove money.",
+                _format_currency(proj_full_total, cur_prec),
+                help="Total portfolio value after trades, including emergency fund. Should be close to current value since rebalancing doesn't add or remove money.",
             )
             col2.metric("Projected Positions", len(projected))
             col3.metric("Trades Applied", len(display_trades))
