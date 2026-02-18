@@ -49,6 +49,17 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Temp file cleanup
+# Runs at the start of every render cycle so that sensitive financial data
+# written to disk during the previous render is removed before the new one.
+# ---------------------------------------------------------------------------
+for _stale_path in st.session_state.pop("_temp_paths", []):
+    try:
+        Path(_stale_path).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 EXAMPLE_DIR = Path(__file__).parent.parent.parent / "examples"
@@ -202,11 +213,18 @@ def _dec(val: Decimal) -> float:
 
 
 def _save_temp(content: str, suffix: str) -> Path:
-    """Write string content to a temp file and return the path."""
+    """Write string content to a temp file and return the path.
+
+    The path is registered in session state and automatically deleted at the
+    start of the next render cycle, so uploaded financial data never
+    accumulates on disk.
+    """
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False)
     tmp.write(content)
     tmp.flush()
-    return Path(tmp.name)
+    p = Path(tmp.name)
+    st.session_state.setdefault("_temp_paths", []).append(str(p))
+    return p
 
 
 def _default_ticker_rows() -> list[dict]:
@@ -1434,10 +1452,12 @@ with tab_trades:
             buf_path = _save_temp("", ".md")
             write_markdown_report(_export_result, buf_path, output_config)
             md_content = buf_path.read_text()
+            buf_path.unlink(missing_ok=True)  # content is now in memory
 
             csv_buf_path = _save_temp("", ".csv")
             write_csv_report(_export_result, csv_buf_path, output_config)
             csv_content = csv_buf_path.read_text()
+            csv_buf_path.unlink(missing_ok=True)  # content is now in memory
 
             dl_col1, dl_col2 = st.columns(2)
             with dl_col1:
