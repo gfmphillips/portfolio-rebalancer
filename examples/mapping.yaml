@@ -47,6 +47,7 @@ VXUS:
   similar: [IXUS, SCHF]
   domicile: US
   preferred: true
+  # price: 65.00  # Set this if you don't hold VXUS yet — routes buys here instead of legacy funds
 
 # International Stocks — Developed (legacy → VXUS)
 VGK:
