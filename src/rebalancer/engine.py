@@ -361,12 +361,11 @@ def _pick_buy_ticker(
                 return ticker, ZERO, None
         return None, ZERO, None
 
-    # Prefer tax-advantaged accounts
+    # Prefer tax-advantaged accounts, then preferred (end-state) ticker
     tax_adv = [c for c in candidates if c.account_type in TAX_ADVANTAGED]
-    if tax_adv:
-        best = tax_adv[0]
-    else:
-        best = candidates[0]
+    pool = tax_adv if tax_adv else candidates
+    preferred = [c for c in pool if mapping.get(c.ticker) and mapping[c.ticker].preferred]
+    best = preferred[0] if preferred else pool[0]
 
     return best.ticker, best.price, best
 
@@ -425,7 +424,8 @@ def _allocate_buys(
     if not class_positions:
         return trades
 
-    # Reference ticker = largest existing position in this class (for new-position buys)
+    # Reference ticker: prefer a preferred (end-state) ticker if one is held,
+    # otherwise fall back to the largest existing position in this class.
     ref_ticker: str = class_positions[0].ticker
     ref_price: Decimal = class_positions[0].price
     best_ref_value = class_positions[0].market_value
@@ -434,6 +434,12 @@ def _allocate_buys(
             ref_ticker = p.ticker
             ref_price = p.price
             best_ref_value = p.market_value
+    for p in class_positions:
+        ticker_info = mapping.get(p.ticker)
+        if ticker_info and ticker_info.preferred:
+            ref_ticker = p.ticker
+            ref_price = p.price
+            break
 
     # Deduplicate by account: pick largest position per account
     best_by_account: dict[str, Position] = {}
@@ -447,7 +453,12 @@ def _allocate_buys(
     all_candidates: list[tuple[str, AccountType, str, Decimal, bool]] = []
 
     for name, p in best_by_account.items():
-        all_candidates.append((name, p.account_type, p.ticker, p.price, False))
+        ticker_info = mapping.get(p.ticker)
+        is_preferred = ticker_info.preferred if ticker_info else False
+        # Route legacy-fund accounts to buy the preferred end-state ticker instead
+        buy_ticker = p.ticker if is_preferred else ref_ticker
+        buy_price = p.price if is_preferred else ref_price
+        all_candidates.append((name, p.account_type, buy_ticker, buy_price, False))
 
     # Add accounts that have available cash but no position in this class
     seen_accounts: dict[str, Position] = {}
