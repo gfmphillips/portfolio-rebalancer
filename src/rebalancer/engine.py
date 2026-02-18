@@ -771,6 +771,53 @@ def _generate_rebalance_trades(
     return trades
 
 
+def project_positions(
+    positions: list[Position],
+    trades: list[Trade],
+) -> list[Position]:
+    """Apply a list of trades to current positions to produce a projected post-trade snapshot.
+
+    BUY trades increase quantity and market value of existing positions, or create a
+    synthetic Position for tickers not yet held. SELL trades reduce quantity and market
+    value. Positions reduced to zero are excluded from the result.
+    """
+    projected: dict[tuple[str, str], Position] = {}
+    for p in positions:
+        projected[(p.account_name, p.ticker)] = p.model_copy(deep=True)
+
+    for trade in trades:
+        key = (trade.account_name, trade.ticker)
+        if trade.action == "SELL":
+            if key in projected:
+                p = projected[key]
+                new_value = max(ZERO, p.market_value - trade.estimated_value)
+                new_qty = max(ZERO, p.quantity - trade.shares)
+                projected[key] = p.model_copy(update={"market_value": new_value, "quantity": new_qty})
+        elif trade.action == "BUY":
+            if key in projected:
+                p = projected[key]
+                projected[key] = p.model_copy(update={
+                    "market_value": p.market_value + trade.estimated_value,
+                    "quantity": p.quantity + trade.shares,
+                })
+            else:
+                price = (
+                    (trade.estimated_value / trade.shares).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+                    if trade.shares > 0 else ZERO
+                )
+                projected[key] = Position(
+                    account_name=trade.account_name,
+                    account_type=trade.account_type,
+                    ticker=trade.ticker,
+                    description=trade.ticker,
+                    quantity=trade.shares,
+                    price=price,
+                    market_value=trade.estimated_value,
+                )
+
+    return [p for p in projected.values() if p.market_value > 0]
+
+
 def analyze_consolidation(
     positions: list[Position],
     mapping: dict[str, TickerMapping],

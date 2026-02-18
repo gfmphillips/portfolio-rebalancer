@@ -9,7 +9,7 @@ import streamlit as st
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
-from rebalancer.engine import CashPools, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, rebalance
+from rebalancer.engine import CashPools, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, project_positions, rebalance
 from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
 from rebalancer.german_tax import annotate_trades, generate_summary
 from rebalancer.models import (
@@ -51,6 +51,24 @@ st.set_page_config(
 EXAMPLE_DIR = Path(__file__).parent.parent.parent / "examples"
 
 ASSET_CLASSES = ["cash", "bonds", "reit", "us_equity", "intl_equity"]
+
+ASSET_CLASS_COLORS = {
+    "cash": "#94a3b8",
+    "bonds": "#60a5fa",
+    "reit": "#f59e0b",
+    "us_equity": "#22c55e",
+    "intl_equity": "#8b5cf6",
+    "unmapped": "#ef4444",
+}
+_FALLBACK_COLORS = ["#64748b", "#3b82f6", "#f97316", "#84cc16", "#a855f7", "#ec4899"]
+
+
+def _pie_colors(labels: list[str]) -> list[str]:
+    """Return a color per label using a consistent asset-class palette."""
+    return [
+        ASSET_CLASS_COLORS.get(label, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
+        for i, label in enumerate(labels)
+    ]
 
 SORT_OPTIONS = {
     "Sells first, largest first": [SortKey.SELLS_FIRST, SortKey.LARGEST_TRADE_FIRST],
@@ -580,8 +598,8 @@ if not st.session_state.dismiss_welcome:
             st.rerun()
 
 # Tabs
-tab_overview, tab_rebalance, tab_trades, tab_consolidation = st.tabs(
-    ["Portfolio Overview", "Rebalance Analysis", "Trade Plan", "Consolidation"]
+tab_overview, tab_rebalance, tab_trades, tab_consolidation, tab_projection = st.tabs(
+    ["Portfolio Overview", "Rebalance Analysis", "Trade Plan", "Consolidation", "Post-Trade Projection"]
 )
 
 # Try to load data
@@ -627,7 +645,7 @@ with tab_overview:
             labels = sorted(pct_by_class.keys())
             values = [_dec(pct_by_class[c]) for c in labels]
             fig = go.Figure(
-                data=[go.Pie(labels=labels, values=values, hole=0.4)]
+                data=[go.Pie(labels=labels, values=values, hole=0.4, marker=dict(colors=_pie_colors(labels)))]
             )
             fig.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=350)
             st.plotly_chart(fig, width="stretch")
@@ -640,7 +658,7 @@ with tab_overview:
             tgt_labels = sorted(tgt_map.keys())
             tgt_values = [tgt_map[c] for c in tgt_labels]
             fig2 = go.Figure(
-                data=[go.Pie(labels=tgt_labels, values=tgt_values, hole=0.4)]
+                data=[go.Pie(labels=tgt_labels, values=tgt_values, hole=0.4, marker=dict(colors=_pie_colors(tgt_labels)))]
             )
             fig2.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=350)
             st.plotly_chart(fig2, width="stretch")
@@ -1215,3 +1233,113 @@ with tab_consolidation:
                         "Reason": opp.reason,
                     })
                 st.dataframe(wait_rows, width="stretch", hide_index=True)
+
+
+# ---- Tab 5: Post-Trade Projection ----
+with tab_projection:
+    if not data_ok:
+        st.error(f"Cannot load data: {data_error}")
+    else:
+        result = st.session_state.result
+        if result is None:
+            st.info("Run the Rebalance Analysis tab first.")
+        elif not result.trades:
+            st.success("No trades needed — portfolio is already at target.")
+        else:
+            display_trades = filter_actionable_trades(
+                result.trades, config.min_trade_value, show_only_actionable
+            )
+            projected = project_positions(all_positions, display_trades)
+            proj_total, proj_by_class, proj_pct_by_class = _compute_allocation(
+                projected, mapping, pct_precision=oc.precision.pct
+            )
+
+            st.subheader("Projected Portfolio After All Trades")
+            st.caption("Estimates your portfolio state after executing every trade in the Trade Plan. Values are approximate — based on current prices and estimated share counts.")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric(
+                "Projected Total Value",
+                _format_currency(proj_total, cur_prec),
+                help="Total portfolio value after trades. Should be close to current value since rebalancing doesn't add or remove money.",
+            )
+            col2.metric("Projected Positions", len(projected))
+            col3.metric("Trades Applied", len(display_trades))
+
+            st.divider()
+
+            # Side-by-side pie charts: current vs projected
+            st.subheader("Allocation Shift")
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                st.caption("Current")
+                cur_labels = sorted(result.current_allocation.keys())
+                cur_values = [_dec(result.current_allocation[c]) for c in cur_labels]
+                fig_cur = go.Figure(data=[go.Pie(
+                    labels=cur_labels, values=cur_values, hole=0.4,
+                    marker=dict(colors=_pie_colors(cur_labels)),
+                )])
+                fig_cur.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
+                st.plotly_chart(fig_cur, width="stretch")
+            with chart_col2:
+                st.caption("Projected")
+                proj_labels = sorted(proj_pct_by_class.keys())
+                proj_values = [_dec(proj_pct_by_class[c]) for c in proj_labels]
+                fig_proj = go.Figure(data=[go.Pie(
+                    labels=proj_labels, values=proj_values, hole=0.4,
+                    marker=dict(colors=_pie_colors(proj_labels)),
+                )])
+                fig_proj.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=300)
+                st.plotly_chart(fig_proj, width="stretch")
+
+            st.divider()
+
+            # Comparison table: Current / Projected / Target
+            st.subheader("Current → Projected → Target")
+            all_classes = sorted(
+                set(result.current_allocation.keys())
+                | set(proj_pct_by_class.keys())
+                | set(result.target_allocation.keys())
+            )
+            proj_rows = []
+            for cls in all_classes:
+                current_pct = result.current_allocation.get(cls, Decimal("0"))
+                projected_pct = proj_pct_by_class.get(cls, Decimal("0"))
+                target_pct = result.target_allocation.get(cls, Decimal("0"))
+                current_drift = current_pct - target_pct
+                projected_drift = projected_pct - target_pct
+                proj_rows.append({
+                    "Asset Class": cls,
+                    "Current %": f"{_dec(current_pct):.2f}",
+                    "Projected %": f"{_dec(projected_pct):.2f}",
+                    "Target %": f"{_dec(target_pct):.2f}",
+                    "Current Drift": f"{_dec(current_drift):+.2f}pp",
+                    "Projected Drift": f"{_dec(projected_drift):+.2f}pp",
+                })
+            st.dataframe(proj_rows, width="stretch", hide_index=True)
+            st.caption("**Projected Drift** should be close to 0pp for all classes if the rebalance is fully funded.")
+
+            st.divider()
+
+            # Projected positions table
+            st.subheader("Projected Positions")
+            proj_pos_rows = []
+            for p in sorted(projected, key=lambda x: (x.account_name, x.ticker)):
+                ticker_info = mapping.get(p.ticker)
+                asset_class = ticker_info.asset_class if ticker_info else "unmapped"
+                current_pos = next(
+                    (cp for cp in all_positions if cp.account_name == p.account_name and cp.ticker == p.ticker),
+                    None,
+                )
+                current_value = current_pos.market_value if current_pos else Decimal("0")
+                change = p.market_value - current_value
+                proj_pos_rows.append({
+                    "Account": p.account_name,
+                    "Ticker": p.ticker,
+                    "Asset Class": asset_class,
+                    "Current Value": _format_currency(current_value, cur_prec) if current_pos else "—",
+                    "Projected Value": _format_currency(p.market_value, cur_prec),
+                    "Change": _format_currency(change, cur_prec) if current_pos else "(new)",
+                    "Projected Shares": f"{_dec(p.quantity):,.3f}",
+                })
+            st.dataframe(proj_pos_rows, width="stretch", hide_index=True)
