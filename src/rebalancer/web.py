@@ -578,11 +578,22 @@ use_live_fx = st.sidebar.checkbox(
     help="Fetches the current EUR/USD exchange rate automatically. Falls back to the manual rate if unavailable.",
 )
 
+_FX_SANITY_MIN = Decimal("0.80")  # EUR/USD historical floor
+_FX_SANITY_MAX = Decimal("1.50")  # EUR/USD historical ceiling
+
 _live_rate: Decimal | None = None
 if use_live_fx:
     _live_rate = fetch_fx_rate("EUR", "USD")
     if _live_rate is not None:
-        st.sidebar.caption(f"Live EUR/USD rate: {_live_rate}")
+        if _live_rate < _FX_SANITY_MIN or _live_rate > _FX_SANITY_MAX:
+            st.sidebar.warning(
+                f"Live EUR/USD rate **{_live_rate}** is outside the expected range "
+                f"({_FX_SANITY_MIN}–{_FX_SANITY_MAX}). This looks wrong — "
+                "falling back to the manual rate below."
+            )
+            _live_rate = None  # reject and fall back to manual entry
+        else:
+            st.sidebar.caption(f"Live EUR/USD rate: {_live_rate}")
     else:
         st.sidebar.caption("Could not fetch live rate — using manual rate below.")
 
