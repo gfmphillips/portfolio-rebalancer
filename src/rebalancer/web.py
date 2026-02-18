@@ -795,6 +795,10 @@ with tab_rebalance:
             result.warnings.append(w)
         st.session_state.result = result
 
+        if result.warnings:
+            for w in result.warnings:
+                st.warning(w)
+
         st.subheader("Allocation vs Target")
         st.caption("Drift = Current % minus Target %. Positive means overweight (sell), negative means underweight (buy). The orange dashed lines show the absolute threshold band.")
 
@@ -923,6 +927,7 @@ with tab_rebalance:
         st.plotly_chart(fig4, width="stretch")
 
         # Tax impact (only show when tax-aware trading is enabled)
+
         if tax_enabled:
             ti = result.tax_impact
             if ti.taxable_trades_count > 0:
@@ -941,12 +946,6 @@ with tab_rebalance:
                     help="Gains minus losses. Positive = you owe taxes on this amount. Negative = you have a tax-loss harvesting benefit.",
                 )
 
-        # Warnings
-        if result.warnings:
-            st.subheader("Warnings")
-            for w in result.warnings:
-                st.warning(w)
-
 
 # ---- Tab 3: Trade Plan ----
 with tab_trades:
@@ -959,6 +958,10 @@ with tab_trades:
         elif not result.trades:
             st.success("Portfolio is within target thresholds. No trades needed.")
         else:
+            if result.warnings:
+                for w in result.warnings:
+                    st.warning(w)
+
             # Filter first, then build execution plan from filtered trades
             display_trades = filter_actionable_trades(
                 result.trades, config.min_trade_value, show_only_actionable
@@ -1155,12 +1158,6 @@ with tab_trades:
                 margin=dict(t=40, b=40),
             )
             st.plotly_chart(fig5, width="stretch")
-
-            # Warnings
-            if result.warnings:
-                st.subheader("Warnings")
-                for w in result.warnings:
-                    st.warning(w)
 
             # German Tax Annotations
             if german_tax_enabled:
