@@ -1,6 +1,7 @@
 """Streamlit web GUI for the portfolio rebalancer."""
 
 import tempfile
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pandas as pd
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
+from rebalancer.prices import fetch_prices
 from rebalancer.engine import CashPools, EMERGENCY_TICKERS, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, project_positions, rebalance
 from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
 from rebalancer.german_tax import annotate_trades, generate_summary
@@ -289,6 +291,12 @@ if "ticker_rows" not in st.session_state:
     st.session_state.ticker_rows = _default_ticker_rows()
 if "acct_rules" not in st.session_state:
     st.session_state.acct_rules = _default_acct_rules()
+if "live_prices" not in st.session_state:
+    st.session_state.live_prices = {}
+if "price_timestamp" not in st.session_state:
+    st.session_state.price_timestamp = None
+if "price_tickers" not in st.session_state:
+    st.session_state.price_tickers = set()
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -313,6 +321,17 @@ elif use_example_csv and (EXAMPLE_DIR / "fidelity_positions.csv").exists():
     csv_path = EXAMPLE_DIR / "fidelity_positions.csv"
 else:
     csv_path = None
+
+_price_col1, _price_col2 = st.sidebar.columns([3, 1])
+with _price_col1:
+    _pts = st.session_state.price_timestamp
+    _np = len(st.session_state.live_prices)
+    if _pts:
+        st.caption(f"Live prices: {_np} tickers · updated {_pts}")
+    else:
+        st.caption("Live prices: loading...")
+with _price_col2:
+    _refresh_prices = st.button("↺ Refresh", key="refresh_prices", use_container_width=True)
 
 # --- 2. Your Accounts ---
 st.sidebar.header("2. Your Accounts")
@@ -418,6 +437,24 @@ ticker_df_edited = st.sidebar.data_editor(
 )
 st.session_state.ticker_rows = ticker_df_edited.to_dict("records")
 mapping = _build_mapping_from_rows(st.session_state.ticker_rows)
+
+# --- Live price fetch ---
+# Fetch on first load (prices empty) or when a new ticker appears in the
+# mapping, or when the user clicks Refresh.
+_price_tickers = [t for t in mapping if not t.startswith("CASH-")]
+_should_fetch = (
+    _refresh_prices
+    or not st.session_state.live_prices
+    or bool(set(_price_tickers) - st.session_state.price_tickers)
+)
+if _should_fetch and _price_tickers:
+    with st.sidebar.spinner("Fetching live prices..."):
+        _fetched = fetch_prices(_price_tickers)
+    if _fetched:
+        st.session_state.live_prices = _fetched
+        st.session_state.price_tickers = set(_price_tickers)
+        st.session_state.price_timestamp = datetime.now().strftime("%H:%M")
+        st.rerun()
 
 # --- 5. Rebalance Settings ---
 st.sidebar.header("5. Rebalance Settings")
@@ -649,6 +686,24 @@ def _load_all(mapping: dict, account_mappings: dict):
     positions = parse_fidelity_csv(csv_path, account_mappings if account_mappings else None)
     if not positions:
         raise ValueError("No positions found in CSV. Check the file format.")
+
+    # Apply live prices: update each position's price and recalculate market value.
+    live = st.session_state.live_prices
+    if live:
+        updated = []
+        for p in positions:
+            if p.ticker in live:
+                new_price = live[p.ticker]
+                new_mv = (new_price * p.quantity).quantize(Decimal("0.01"))
+                updated.append(p.model_copy(update={"price": new_price, "market_value": new_mv}))
+            else:
+                updated.append(p)
+        positions = updated
+        # Also update mapping prices so preferred-but-not-held tickers
+        # get accurate buy estimates.
+        for ticker in list(mapping):
+            if ticker in live:
+                mapping[ticker] = mapping[ticker].model_copy(update={"price": live[ticker]})
 
     targets = _build_targets()
 
