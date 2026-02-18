@@ -186,6 +186,27 @@ def rebalance(
                 f"Add 'price: <current_price>' to {ticker} in mapping.yaml."
             )
 
+    # Warn about held positions with price=0 that will be silently skipped in buy routing.
+    zero_price_mapped = sorted({
+        p.ticker for p in positions
+        if p.price == 0 and p.ticker in mapping and mapping[p.ticker].asset_class != "cash"
+    })
+    if zero_price_mapped:
+        warnings.append(
+            f"Positions with no price data (will be excluded from buy routing): "
+            f"{', '.join(zero_price_mapped)}. Check your CSV or refresh live prices."
+        )
+
+    # Warn when a non-zero target allocation has no mapped tickers to buy into.
+    for t in targets:
+        if t.target_pct > 0:
+            has_ticker = any(info.asset_class == t.asset_class for info in mapping.values())
+            if not has_ticker:
+                warnings.append(
+                    f"No tickers are mapped to '{t.asset_class}' (target: {t.target_pct}%). "
+                    "Add a fund in Fund Classification — the tool cannot buy into this class."
+                )
+
     current_allocation: dict[str, Decimal] = {}
     for cls, val in value_by_class.items():
         current_allocation[cls] = _quantize_pct(val / total_value * HUNDRED)
@@ -461,9 +482,9 @@ def _allocate_buys(
             preferred_found = True
             break
     if not preferred_found:
-        # Preferred ticker not held — check mapping for one with a price set
+        # Preferred ticker not held — check mapping for one with a usable price set
         for ticker, info in mapping.items():
-            if info.asset_class == asset_class and info.preferred and info.price is not None:
+            if info.asset_class == asset_class and info.preferred and info.price is not None and info.price > 0:
                 ref_ticker = ticker
                 ref_price = info.price
                 break
@@ -514,6 +535,8 @@ def _allocate_buys(
         buy_here = min(remaining, avail)
         if buy_here < config.min_trade_value:
             continue
+        if price <= 0:
+            continue  # no price available for this ticker; skip silently (warned at rebalance() level)
         shares = _quantize_shares(buy_here / price)
         if shares <= 0:
             continue

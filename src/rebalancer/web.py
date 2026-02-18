@@ -868,14 +868,21 @@ with tab_overview:
                     icon="⚠️",
                 )
 
+        # Separate investable from emergency — rebalancing only touches investable,
+        # so the allocation chart should match exactly what rebalancing operates on.
+        investable_positions = [p for p in all_positions if p.ticker not in EMERGENCY_TICKERS]
+        emergency_positions  = [p for p in all_positions if p.ticker in EMERGENCY_TICKERS]
+        emergency_value = sum(p.market_value for p in emergency_positions)
+
         total_value, value_by_class, pct_by_class = _compute_allocation(
-            all_positions, mapping, pct_precision=oc.precision.pct
+            investable_positions, mapping, pct_precision=oc.precision.pct
         )
+        full_total = total_value + emergency_value  # for the KPI metric
 
         # KPI row
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Portfolio Value", _format_currency(total_value, cur_prec),
-                     help="The combined current market value of every position in your CSV plus any bank cash you entered in the sidebar. This is the baseline the tool rebalances against.")
+        col1.metric("Total Portfolio Value", _format_currency(full_total, cur_prec),
+                     help="The combined current market value of every position in your CSV plus any bank cash you entered in the sidebar. Emergency fund is included here but excluded from rebalancing.")
         col2.metric("Accounts", len({p.account_name for p in all_positions}),
                      help="Number of distinct brokerage accounts found in your CSV. Each account has a tax type (Taxable, Roth, IRA, etc.) that affects which accounts get traded first.")
         col3.metric("Positions", len(all_positions),
@@ -888,9 +895,14 @@ with tab_overview:
 
         with chart_col1:
             st.subheader("Current Allocation (what you own today)")
+            if emergency_value > 0:
+                st.caption(
+                    f"Shows your **investable** portfolio ({_format_currency(total_value, cur_prec)}). "
+                    f"Emergency fund ({_format_currency(emergency_value, cur_prec)}) is held separately and not rebalanced."
+                )
             labels = sorted(pct_by_class.keys())
             values = [_dec(pct_by_class[c]) for c in labels]
-            hover = _build_pie_hover_texts(labels, all_positions, mapping, cur_prec)
+            hover = _build_pie_hover_texts(labels, investable_positions, mapping, cur_prec)
             fig = go.Figure(data=[go.Pie(
                 labels=labels,
                 values=values,
