@@ -401,8 +401,14 @@ st.sidebar.caption(
     "new money. If a fund from your portfolio is missing, add it with ➕. Any fund left "
     "unclassified will appear as a warning in the results."
 )
+_ticker_df = pd.DataFrame(st.session_state.ticker_rows)
+_live_prices = st.session_state.live_prices
+_ticker_df["Live Price"] = _ticker_df["Ticker"].apply(
+    lambda t: float(_live_prices[str(t).strip().upper()])
+    if t and str(t).strip().upper() in _live_prices else None
+)
 ticker_df_edited = st.sidebar.data_editor(
-    pd.DataFrame(st.session_state.ticker_rows),
+    _ticker_df,
     column_config={
         "Ticker": st.column_config.TextColumn(
             "Ticker",
@@ -429,13 +435,20 @@ ticker_df_edited = st.sidebar.data_editor(
             min_value=0.0,
             format="%.2f",
         ),
+        "Live Price": st.column_config.NumberColumn(
+            "Live Price ($)",
+            disabled=True,
+            format="$%.2f",
+            help="Current market price fetched live. Use the ↺ Refresh button above to update.",
+        ),
     },
+    column_order=["Ticker", "Asset Class", "Target Fund?", "Consolidate Into", "Price ($)", "Live Price"],
     num_rows="dynamic",
     hide_index=True,
     use_container_width=True,
     key="ticker_editor",
 )
-st.session_state.ticker_rows = ticker_df_edited.to_dict("records")
+st.session_state.ticker_rows = ticker_df_edited.drop(columns=["Live Price"], errors="ignore").to_dict("records")
 mapping = _build_mapping_from_rows(st.session_state.ticker_rows)
 
 # --- Live price fetch ---
