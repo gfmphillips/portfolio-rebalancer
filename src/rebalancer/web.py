@@ -1413,33 +1413,50 @@ with tab_trades:
                         f"First EUR {sparer:,} of investment income is tax-free."
                     )
 
-            # Download markdown report
+            # Export section
             st.divider()
-            st.subheader("Export")
+            st.subheader("Export Trade Plan")
+            _n_shown = len(display_trades)
+            _n_hidden = len(result.trades) - _n_shown
+            _export_caption = f"Downloads contain the {_n_shown} trade(s) shown above"
+            if _n_hidden:
+                _export_caption += f" ({_n_hidden} trade(s) below your ${float(config.min_trade_value):,.0f} minimum are excluded)"
+            _export_caption += "."
+            st.caption(_export_caption)
+
             from rebalancer.output import write_csv_report, write_markdown_report
 
+            # Build a result containing only the filtered (displayed) trades so the
+            # download exactly matches what's shown on screen.
+            _export_result = result.model_copy(update={"trades": display_trades})
+            _today = datetime.now().strftime("%Y-%m-%d")
+
             buf_path = _save_temp("", ".md")
-            write_markdown_report(result, buf_path, output_config)
+            write_markdown_report(_export_result, buf_path, output_config)
             md_content = buf_path.read_text()
 
             csv_buf_path = _save_temp("", ".csv")
-            write_csv_report(result, csv_buf_path, output_config)
+            write_csv_report(_export_result, csv_buf_path, output_config)
             csv_content = csv_buf_path.read_text()
 
             dl_col1, dl_col2 = st.columns(2)
             with dl_col1:
                 st.download_button(
-                    label="Download Markdown Report",
+                    label="⬇ Download Markdown",
                     data=md_content,
-                    file_name="rebalance_report.md",
+                    file_name=f"rebalance_{_today}.md",
                     mime="text/markdown",
+                    use_container_width=True,
+                    help="Human-readable report with allocation table, execution plan, and tax impact summary.",
                 )
             with dl_col2:
                 st.download_button(
-                    label="Download CSV Report",
+                    label="⬇ Download CSV",
                     data=csv_content,
-                    file_name="trade_plan.csv",
+                    file_name=f"trade_plan_{_today}.csv",
                     mime="text/csv",
+                    use_container_width=True,
+                    help="Spreadsheet-friendly: one row per trade with account, ticker, shares, value, and gain/loss.",
                 )
 
 
