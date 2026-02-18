@@ -388,7 +388,7 @@ def _pick_buy_ticker(
     return pool[0].ticker, pool[0].price, pool[0]
 
 
-_EMERGENCY_TICKERS = {"CASH-USD-EMERGENCY", "CASH-EUR-EMERGENCY"}
+EMERGENCY_TICKERS = {"CASH-USD-EMERGENCY", "CASH-EUR-EMERGENCY"}
 
 
 def _build_initial_cash_pools(
@@ -402,7 +402,7 @@ def _build_initial_cash_pools(
     """
     pools = CashPools()
     for p in positions:
-        if p.ticker in _EMERGENCY_TICKERS:
+        if p.ticker in EMERGENCY_TICKERS:
             continue
         ticker_info = mapping.get(p.ticker)
         if ticker_info and ticker_info.asset_class == "cash":
