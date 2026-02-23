@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from rebalancer.engine import CashPools, _build_initial_cash_pools, _sort_lots, analyze_consolidation, build_run_metadata, check_constraints, rebalance
+from rebalancer.engine import CashPools, _build_initial_cash_pools, _sort_lots, analyze_consolidation, build_run_metadata, check_constraints, project_positions, rebalance
 from rebalancer.models import (
     AccountType,
     AllocationTarget,
@@ -1695,3 +1695,158 @@ class TestWholeSharesOnly:
         assert whole_buys <= fractional_buys, (
             "Whole-share buys should not exceed fractional-share buys"
         )
+
+
+class TestProjectPositions:
+    """Tests for project_positions() — applies a trade list to current holdings.
+
+    Used by Tab 5 (Post-Trade Projection) in the web UI.
+    Previously had zero test coverage.
+    """
+
+    def _pos(
+        self,
+        ticker: str,
+        qty: str = "100",
+        price: str = "50",
+        mv: str = "5000",
+        account: str = "Taxable",
+        acct_type: AccountType = AccountType.TAXABLE,
+    ) -> Position:
+        return Position(
+            account_name=account,
+            account_type=acct_type,
+            ticker=ticker,
+            description=ticker,
+            quantity=Decimal(qty),
+            price=Decimal(price),
+            market_value=Decimal(mv),
+        )
+
+    def _trade(
+        self,
+        action: str,
+        ticker: str,
+        shares: str,
+        value: str,
+        account: str = "Taxable",
+        acct_type: AccountType = AccountType.TAXABLE,
+    ) -> Trade:
+        return Trade(
+            account_name=account,
+            account_type=acct_type,
+            ticker=ticker,
+            action=action,
+            shares=Decimal(shares),
+            estimated_value=Decimal(value),
+            reasoning="test",
+        )
+
+    def test_buy_increases_existing_position(self):
+        pos = self._pos("VTI", qty="10", price="200", mv="2000")
+        trade = self._trade("BUY", "VTI", "5", "1000")
+        result = project_positions([pos], [trade])
+        vti = next(p for p in result if p.ticker == "VTI")
+        assert vti.quantity == Decimal("15")
+        assert vti.market_value == Decimal("3000")
+
+    def test_buy_creates_new_position(self):
+        """Buying a ticker not yet held should create a synthetic position."""
+        pos = self._pos("BND", qty="50", price="80", mv="4000")
+        trade = self._trade("BUY", "VTI", "5", "1000")
+        result = project_positions([pos], [trade])
+        tickers = {p.ticker for p in result}
+        assert "VTI" in tickers
+        vti = next(p for p in result if p.ticker == "VTI")
+        assert vti.quantity == Decimal("5")
+        assert vti.market_value == Decimal("1000")
+
+    def test_buy_new_position_has_computed_price(self):
+        """Synthetic position created by a buy should derive price from value / shares."""
+        trade = self._trade("BUY", "VTI", "5", "1000")
+        result = project_positions([], [trade])
+        assert len(result) == 1
+        assert result[0].price == Decimal("200.0000")
+
+    def test_sell_decreases_existing_position(self):
+        pos = self._pos("VTI", qty="20", price="200", mv="4000")
+        trade = self._trade("SELL", "VTI", "5", "1000")
+        result = project_positions([pos], [trade])
+        vti = next(p for p in result if p.ticker == "VTI")
+        assert vti.quantity == Decimal("15")
+        assert vti.market_value == Decimal("3000")
+
+    def test_sell_to_zero_removes_position(self):
+        """A position sold entirely (market_value → 0) should not appear in the result."""
+        pos = self._pos("VTI", qty="10", price="200", mv="2000")
+        trade = self._trade("SELL", "VTI", "10", "2000")
+        result = project_positions([pos], [trade])
+        assert not any(p.ticker == "VTI" for p in result)
+
+    def test_untouched_positions_preserved(self):
+        """Positions not involved in any trade should pass through unchanged."""
+        positions = [
+            self._pos("VTI", qty="10", price="200", mv="2000"),
+            self._pos("BND", qty="20", price="80", mv="1600"),
+        ]
+        trade = self._trade("BUY", "VTI", "5", "1000")
+        result = project_positions(positions, [trade])
+        bnd = next(p for p in result if p.ticker == "BND")
+        assert bnd.quantity == Decimal("20")
+        assert bnd.market_value == Decimal("1600")
+
+    def test_sell_unknown_ticker_is_noop(self):
+        """Selling a ticker not in positions should silently do nothing (no new position)."""
+        pos = self._pos("BND")
+        trade = self._trade("SELL", "VTI", "10", "2000")
+        result = project_positions([pos], [trade])
+        assert all(p.ticker != "VTI" for p in result)
+        assert len(result) == 1  # BND still present
+
+    def test_empty_trades_returns_all_positions(self):
+        positions = [self._pos("VTI"), self._pos("BND")]
+        result = project_positions(positions, [])
+        assert len(result) == 2
+
+    def test_multiple_trades_applied_in_order(self):
+        """Two buys of the same ticker accumulate correctly."""
+        pos = self._pos("VTI", qty="10", price="200", mv="2000")
+        trades = [
+            self._trade("BUY", "VTI", "3", "600"),
+            self._trade("BUY", "VTI", "2", "400"),
+        ]
+        result = project_positions([pos], trades)
+        vti = next(p for p in result if p.ticker == "VTI")
+        assert vti.quantity == Decimal("15")
+        assert vti.market_value == Decimal("3000")
+
+
+class TestConsolidationNoBasis:
+    """Additional consolidation branch: taxable position with no cost basis data."""
+
+    def _make_mapping(self):
+        return {
+            "VTI": TickerMapping(asset_class="us_equity", preferred=True),
+            "FXAIX": TickerMapping(asset_class="us_equity", consolidate_to="VTI"),
+        }
+
+    def test_no_basis_data_is_unsafe_with_correct_reason(self):
+        """Taxable position with cost_basis_total=None → safe=False, reason mentions cost basis."""
+        mapping = self._make_mapping()
+        positions = [
+            Position(
+                account_name="Taxable",
+                account_type=AccountType.TAXABLE,
+                ticker="FXAIX",
+                description="FXAIX",
+                quantity=Decimal("50"),
+                price=Decimal("200"),
+                market_value=Decimal("10000"),
+                cost_basis_total=None,
+            ),
+        ]
+        analysis = analyze_consolidation(positions, mapping)
+        assert len(analysis.opportunities) == 1
+        opp = analysis.opportunities[0]
+        assert opp.safe_to_consolidate is False
+        assert "cost basis" in opp.reason.lower()

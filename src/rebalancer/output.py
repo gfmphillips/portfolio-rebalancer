@@ -53,6 +53,10 @@ def build_execution_plan(trades: list[Trade]) -> list[ExecutionStep]:
     then all buys (grouped by account, largest first within account).
     Tracks a running cash tally so the user can see proceeds accumulating
     before buys spend them.
+
+    If a buy step would make the running cash tally go negative (meaning buys
+    exceed sell proceeds + starting cash), a warning is attached to that step
+    so the user knows to wait for settlement or add external cash.
     """
     sells = [t for t in trades if t.action == "SELL"]
     buys = [t for t in trades if t.action == "BUY"]
@@ -89,9 +93,16 @@ def build_execution_plan(trades: list[Trade]) -> list[ExecutionStep]:
         for t in acct_trades:
             step_num += 1
             cash -= t.estimated_value
+            note = ""
+            if cash < ZERO:
+                note = (
+                    f"⚠ Running cash balance is negative after this step "
+                    f"(${cash:,.2f}). Ensure sells have settled before placing "
+                    "this buy, or add external cash to cover the shortfall."
+                )
             steps.append(ExecutionStep(
                 step_num=step_num, phase="BUY", trade=t,
-                cash_after=cash, note="",
+                cash_after=cash, note=note,
             ))
 
     return steps

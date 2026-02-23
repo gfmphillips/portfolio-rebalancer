@@ -315,6 +315,15 @@ if "price_timestamp" not in st.session_state:
     st.session_state.price_timestamp = None
 if "price_tickers" not in st.session_state:
     st.session_state.price_tickers = set()
+if "live_fx_rate" not in st.session_state:
+    st.session_state.live_fx_rate = None  # cached EUR/USD rate; None = not yet fetched
+if "manual_fx" not in st.session_state:
+    st.session_state.manual_fx = 1.10  # default before first live fetch
+# Content hashes for uploaded files — used to avoid re-parsing on every rerun.
+if "txn_bytes_hash" not in st.session_state:
+    st.session_state.txn_bytes_hash = None
+if "lots_bytes_hash" not in st.session_state:
+    st.session_state.lots_bytes_hash = None
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -536,7 +545,17 @@ uploaded_transactions = st.sidebar.file_uploader(
 )
 txn_path = None
 if uploaded_transactions:
-    txn_path = _save_temp(uploaded_transactions.getvalue().decode("utf-8-sig"), ".csv")
+    _txn_bytes = uploaded_transactions.getvalue()
+    _txn_hash = hash(_txn_bytes)
+    if _txn_hash != st.session_state.txn_bytes_hash:
+        # Content changed (new upload or first upload) — write a fresh temp file.
+        st.session_state.txn_bytes_hash = _txn_hash
+        st.session_state["_txn_path"] = str(_save_temp(_txn_bytes.decode("utf-8-sig"), ".csv"))
+    txn_path = Path(st.session_state["_txn_path"]) if "_txn_path" in st.session_state else None
+else:
+    # File removed — clear cached path and hash.
+    st.session_state.txn_bytes_hash = None
+    st.session_state.pop("_txn_path", None)
 
 uploaded_lots = st.sidebar.file_uploader(
     "Tax lot CSV (optional)",
@@ -546,7 +565,15 @@ uploaded_lots = st.sidebar.file_uploader(
 )
 lots_path = None
 if uploaded_lots:
-    lots_path = _save_temp(uploaded_lots.getvalue().decode("utf-8-sig"), ".csv")
+    _lots_bytes = uploaded_lots.getvalue()
+    _lots_hash = hash(_lots_bytes)
+    if _lots_hash != st.session_state.lots_bytes_hash:
+        st.session_state.lots_bytes_hash = _lots_hash
+        st.session_state["_lots_path"] = str(_save_temp(_lots_bytes.decode("utf-8-sig"), ".csv"))
+    lots_path = Path(st.session_state["_lots_path"]) if "_lots_path" in st.session_state else None
+else:
+    st.session_state.lots_bytes_hash = None
+    st.session_state.pop("_lots_path", None)
 
 fidelity_lots_paste = st.sidebar.text_area(
     "Paste Fidelity lot data (optional)",
@@ -605,27 +632,42 @@ use_live_fx = st.sidebar.checkbox(
 _FX_SANITY_MIN = Decimal("0.80")  # EUR/USD historical floor
 _FX_SANITY_MAX = Decimal("1.50")  # EUR/USD historical ceiling
 
-_live_rate: Decimal | None = None
-if use_live_fx:
-    _live_rate = fetch_fx_rate("EUR", "USD")
-    if _live_rate is not None:
-        if _live_rate < _FX_SANITY_MIN or _live_rate > _FX_SANITY_MAX:
+# Fetch the live EUR/USD rate at most once per session (or when use_live_fx is
+# first enabled).  Caching in session_state prevents a network call on every
+# widget interaction — previously `fetch_fx_rate()` fired on every rerun.
+if use_live_fx and st.session_state.live_fx_rate is None:
+    _fetched_rate = fetch_fx_rate("EUR", "USD")
+    if _fetched_rate is not None:
+        if _fetched_rate < _FX_SANITY_MIN or _fetched_rate > _FX_SANITY_MAX:
             st.sidebar.warning(
-                f"Live EUR/USD rate **{_live_rate}** is outside the expected range "
+                f"Live EUR/USD rate **{_fetched_rate}** is outside the expected range "
                 f"({_FX_SANITY_MIN}–{_FX_SANITY_MAX}). This looks wrong — "
                 "falling back to the manual rate below."
             )
-            _live_rate = None  # reject and fall back to manual entry
         else:
-            st.sidebar.caption(f"Live EUR/USD rate: {_live_rate}")
+            st.session_state.live_fx_rate = _fetched_rate
+            # Pre-fill the manual input with the live rate on first fetch so
+            # the user sees the current rate and can override it freely.
+            st.session_state.manual_fx = float(_fetched_rate)
+
+if not use_live_fx:
+    # User disabled live fetch — clear cached rate so it re-fetches if re-enabled.
+    st.session_state.live_fx_rate = None
+
+_live_rate: Decimal | None = st.session_state.live_fx_rate
+if use_live_fx:
+    if _live_rate is not None:
+        st.sidebar.caption(f"Live EUR/USD rate: {_live_rate}")
     else:
         st.sidebar.caption("Could not fetch live rate — using manual rate below.")
 
-fx_default = float(_live_rate) if _live_rate is not None else 1.10
+# `manual_fx` is initialized in session state above (once, before this widget
+# renders).  Omitting `value=` here prevents the input from being reset to the
+# live rate on every rerun — the user can freely override it after the initial
+# pre-fill without any widget interaction undoing their edit.
 manual_fx = st.sidebar.number_input(
     "EUR/USD rate",
     min_value=0.01,
-    value=fx_default,
     step=0.01,
     format="%.4f",
     key="manual_fx",
