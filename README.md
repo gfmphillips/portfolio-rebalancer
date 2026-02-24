@@ -39,7 +39,57 @@ uv run rebalancer run \
   --config examples/config.yaml
 ```
 
-## How it works
+## Policy-aware mode (current default UI)
+
+The app operates under a strict no-new-ETF policy:
+
+- **New purchases** are limited to individual stocks (via a stock basket CSV) and Treasury/CD placeholders
+- **Legacy ETFs/funds** can be held and sold but never bought again
+- **IRA/Roth accounts** are buy-frozen (can sell, cannot buy new positions)
+- **Band detection** uses the total portfolio view; routing/execution uses only buy-enabled accounts
+
+### Targets & configuration
+
+Set in the **Settings** tab or edit `~/.portfolio-rebalancer/settings.json`:
+
+| Setting | Default | Description |
+|---|---|---|
+| `target_stock_pct` | 80% | Strategic stock allocation |
+| `target_bond_pct` | 20% | Strategic defensive allocation |
+| `rebalance_band_abs` | ±5 pp | Outside-band threshold |
+| `horizon_months` | 18 | Flag if new-money correction takes longer |
+| `investable_cash_eur` | 0 | One-time cash to deploy this cycle |
+| `monthly_investable_cash_eur` | 0 | Monthly savings rate (for horizon estimate) |
+| `defensive_mode` | `treasury_only` | `treasury_only` / `treasury_cd_split` / `ladder` |
+| `buy_enabled_account_types` | taxable | Account types that can receive new buys |
+| `allow_legacy_etf_sales` | false | Enable sell recommendations for legacy ETFs |
+
+### Stock basket
+
+Upload a CSV to the **Settings → Basket** section (or download the template):
+
+```
+ticker,target_weight,name,sector,country,is_adr
+AAPL,7.00,Apple Inc.,Technology,US,false
+MSFT,5.50,Microsoft Corp.,Technology,US,false
+```
+
+- Weights can be 0–100 (percentages) or 0–1 (fractions); auto-detected and normalized
+- Filename `basket_us_equity_vYYYY-MM-DD.csv` sets the basket version badge
+- Top-up math: `target = w_i × (existing_basket_value + new_equity_cash)` — existing holdings are credited, so only the gap is purchased
+
+### Limitations
+
+- No SELL recommendations for individual stocks (sell side not yet implemented)
+- Basket orders assume whole shares only; fractional shares not supported
+- Defensive placeholders (TREASURY, CD) require manual execution at your broker
+- `allow_legacy_etf_sales=True` is irreversible — ETFs sold cannot be repurchased
+
+---
+
+## How it works (legacy engine)
+
+The original rebalance engine (`rebalance()` in `engine.py`) remains intact and is available via CLI:
 
 1. **Parse** your Fidelity CSV export (handles dollar signs, trailing `**` on money market symbols, account type detection)
 2. **Compare** current allocation against your targets using absolute and relative drift bands

@@ -5,14 +5,21 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from importlib.metadata import version as pkg_version
 
 from .models import (
+    DEFENSIVE_ASSET_CLASSES,
     HUNDRED,
+    STOCK_ASSET_CLASSES,
     ZERO,
     AccountType,
     AllocationTarget,
+    AllocationView,
+    BasketConstituent,
+    BuyPlan,
     ConsolidationAnalysis,
     ConsolidationOpportunity,
     ConstraintCheck,
     ConstraintsConfig,
+    DefensiveMode,
+    PolicyConfig,
     Position,
     RebalanceConfig,
     RebalanceResult,
@@ -918,4 +925,329 @@ def analyze_consolidation(
         end_state_pct=end_state_pct,
         legacy_pct=legacy_pct,
         opportunities=opportunities,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Policy-aware engine — new-money-only investing
+# ---------------------------------------------------------------------------
+
+def compute_allocation_views(
+    positions: list[Position],
+    policy: PolicyConfig,
+    mapping: dict[str, TickerMapping],
+) -> tuple[AllocationView, AllocationView]:
+    """Compute total and implementable allocation views.
+
+    Classification rules (source of truth — overrides instrument_type for math):
+        stock_classes     = STOCK_ASSET_CLASSES  = {"us_equity", "intl_equity", "reit"}
+        defensive_classes = DEFENSIVE_ASSET_CLASSES = {"bonds", "cash"}
+
+    total_view:
+        All positions across all accounts.  excluded_value = 0.
+
+    implementable_view:
+        Only positions in buy_enabled_account_types.
+        excluded_value = sum of positions in IRA/Roth/non-buy-enabled accounts.
+        Investable cash in buy-enabled accounts is included.
+    """
+
+    def _build_view(
+        view_positions: list[Position],
+        label: str,
+        excluded_value: Decimal,
+        excluded_reason: str,
+    ) -> AllocationView:
+        stock_val = ZERO
+        defensive_val = ZERO
+        for p in view_positions:
+            tm = mapping.get(p.ticker)
+            asset_class = tm.asset_class if tm else ""
+            if asset_class in STOCK_ASSET_CLASSES:
+                stock_val += p.market_value
+            elif asset_class in DEFENSIVE_ASSET_CLASSES:
+                defensive_val += p.market_value
+
+        total_val = stock_val + defensive_val
+        if total_val > ZERO:
+            stock_pct = (stock_val / total_val).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+            def_pct = (defensive_val / total_val).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+        else:
+            stock_pct = ZERO
+            def_pct = ZERO
+
+        stock_drift = (stock_pct - policy.target_stock_pct).quantize(
+            Decimal("0.0001"), rounding=ROUND_HALF_UP
+        )
+        within_bands = abs(stock_drift) <= policy.rebalance_band_abs
+
+        return AllocationView(
+            label=label,
+            total_value=total_val,
+            stock_value=stock_val,
+            defensive_value=defensive_val,
+            stock_pct=stock_pct,
+            bond_pct=def_pct,
+            target_stock_pct=policy.target_stock_pct,
+            target_bond_pct=policy.target_bond_pct,
+            stock_drift=stock_drift,
+            within_bands=within_bands,
+            excluded_value=excluded_value,
+            excluded_reason=excluded_reason,
+        )
+
+    total_view = _build_view(positions, "Total Portfolio", ZERO, "")
+
+    impl_positions = [
+        p for p in positions
+        if p.account_type.value in policy.buy_enabled_account_types
+    ]
+    excluded_val = sum(
+        p.market_value
+        for p in positions
+        if p.account_type.value not in policy.buy_enabled_account_types
+    )
+    impl_view = _build_view(
+        impl_positions,
+        "Implementable",
+        excluded_val,
+        "IRA/Roth/non-buy-enabled accounts",
+    )
+
+    return total_view, impl_view
+
+
+def _build_defensive_instructions(
+    defensive_cash_usd: Decimal,
+    policy: PolicyConfig,
+    account_name: str,
+    account_type: AccountType,
+) -> list[Trade]:
+    """Generate defensive placeholder Trade rows based on defensive_mode."""
+    if defensive_cash_usd <= ZERO:
+        return []
+
+    def _make(ticker: str, amount: Decimal) -> Trade:
+        return Trade(
+            account_name=account_name,
+            account_type=account_type,
+            ticker=ticker,
+            action="BUY",
+            shares=ZERO,
+            estimated_value=amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            reasoning="Defensive allocation placeholder — execute manually",
+        )
+
+    mode = policy.defensive_mode
+
+    if mode == DefensiveMode.treasury_only:
+        return [_make("TREASURY", defensive_cash_usd)]
+
+    if mode == DefensiveMode.treasury_cd_split:
+        rows = []
+        t_amt = (defensive_cash_usd * policy.treasury_pct).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        c_amt = (defensive_cash_usd * policy.cd_pct).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if t_amt > ZERO:
+            rows.append(_make("TREASURY", t_amt))
+        if c_amt > ZERO:
+            rows.append(_make("CD", c_amt))
+        return rows
+
+    # ladder mode
+    rungs = policy.ladder_rungs_months
+    if not rungs:
+        return [_make("TREASURY", defensive_cash_usd)]
+    per_rung = (defensive_cash_usd / len(rungs)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return [
+        _make(f"TREASURY_{m}M_{policy.ladder_currency}", per_rung)
+        for m in rungs
+    ]
+
+
+def new_money_plan(
+    positions: list[Position],
+    policy: PolicyConfig,
+    mapping: dict[str, TickerMapping],
+    basket: list[BasketConstituent] | None = None,
+    prices: dict[str, Decimal] | None = None,
+) -> BuyPlan:
+    """New-money-only investment plan under the current policy.
+
+    Never recommends selling existing ETF positions unless allow_legacy_etf_sales=True.
+    Band detection is based on the TOTAL portfolio view (strategic risk signal).
+    Cash routing/execution uses the implementable view (buy-enabled accounts only).
+    """
+    from .basket import compute_basket_orders
+    from .policy import build_legacy_sell_flags, months_to_reenter_band
+
+    warnings: list[str] = []
+
+    total_view, impl_view = compute_allocation_views(positions, policy, mapping)
+
+    # --- Cash conversion ---
+    investable_cash_usd = (policy.investable_cash_eur * policy.eurusd_fx).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    monthly_cash_usd = (policy.monthly_investable_cash_eur * policy.eurusd_fx).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+    # --- Band detection from TOTAL view (strategic signal) ---
+    drift = total_view.stock_drift            # positive = overweight stocks
+    band  = policy.rebalance_band_abs
+    outside_band = not total_view.within_bands
+
+    # --- Cash split ---
+    if drift > band:
+        # Overweight stocks: all cash → defensive
+        equity_cash_usd    = ZERO
+        defensive_cash_usd = investable_cash_usd
+    elif drift < -band:
+        # Underweight stocks: all cash → equity
+        equity_cash_usd    = investable_cash_usd
+        defensive_cash_usd = ZERO
+    else:
+        # Within band: proportional split to nudge toward target
+        # Fraction of cash that goes to each side based on relative targets
+        total_target = policy.target_stock_pct + policy.target_bond_pct
+        if total_target > ZERO:
+            eq_frac = (policy.target_stock_pct / total_target).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+        else:
+            eq_frac = Decimal("0.80")
+        equity_cash_usd    = (investable_cash_usd * eq_frac).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        defensive_cash_usd = (investable_cash_usd - equity_cash_usd).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+    # --- Equity instructions ---
+    # Route to buy-enabled accounts; use the first buy-enabled account we can find
+    impl_positions = [
+        p for p in positions
+        if p.account_type.value in policy.buy_enabled_account_types
+    ]
+    # Pick account for trade routing (first buy-enabled position, or taxable default)
+    buy_account_name = "Taxable"
+    buy_account_type = AccountType.TAXABLE
+    for p in impl_positions:
+        buy_account_name = p.account_name
+        buy_account_type = p.account_type
+        break
+
+    equity_instructions: list[Trade] = []
+    if equity_cash_usd >= policy.min_trade_value:
+        if basket:
+            # Build {ticker: Position} for basket holdings in buy-enabled accounts
+            basket_tickers = {c.ticker for c in basket}
+            current_basket_holdings = {
+                p.ticker: p
+                for p in impl_positions
+                if p.ticker in basket_tickers
+            }
+            # Price resolution: external prices dict takes priority;
+            # constituent.price (from CSV `price` column) fills any gaps.
+            constituent_prices = {
+                c.ticker: c.price
+                for c in basket
+                if c.price is not None and c.price > ZERO
+            }
+            effective_prices = {**constituent_prices, **(prices or {})}
+            equity_instructions = compute_basket_orders(
+                constituents=basket,
+                current_holdings=current_basket_holdings,
+                equity_cash=equity_cash_usd,
+                n_stocks=policy.basket_size,
+                min_trade_value=policy.min_trade_value,
+                prices=effective_prices,
+                account_name=buy_account_name,
+                account_type=buy_account_type,
+            )
+        else:
+            # No basket: single placeholder row
+            equity_instructions = [
+                Trade(
+                    account_name=buy_account_name,
+                    account_type=buy_account_type,
+                    ticker="US_STOCK_BASKET",
+                    action="BUY",
+                    shares=ZERO,
+                    estimated_value=equity_cash_usd,
+                    reasoning="Equity allocation placeholder — upload basket CSV to expand",
+                )
+            ]
+
+    # --- Defensive instructions (from defensive_cash_usd — not equity_cash) ---
+    defensive_instructions = _build_defensive_instructions(
+        defensive_cash_usd, policy, buy_account_name, buy_account_type
+    )
+
+    # --- Horizon / months-to-fix (from total view) ---
+    m_fix = months_to_reenter_band(
+        stock_value_usd=total_view.stock_value,
+        total_value_usd=total_view.total_value,
+        target_stock_pct=policy.target_stock_pct,
+        band_abs=policy.rebalance_band_abs,
+        monthly_new_cash_usd=monthly_cash_usd,
+    )
+    if monthly_cash_usd <= ZERO:
+        warnings.append(
+            "monthly_investable_cash_eur is 0 — cannot estimate months to re-enter band. "
+            "Set it in Settings for a horizon projection."
+        )
+
+    # --- Legacy sell flags ---
+    legacy_flags, legacy_trades = build_legacy_sell_flags(
+        positions, mapping, policy, outside_band, m_fix
+    )
+
+    # Horizon warning
+    if (
+        outside_band
+        and m_fix is not None
+        and m_fix > policy.horizon_months
+    ):
+        warnings.append(
+            f"Portfolio is outside target bands and will take ≈{int(m_fix)} months to "
+            f"correct with new money alone (>{policy.horizon_months}-month horizon). "
+            "Consider enabling allow_legacy_etf_sales."
+        )
+
+    from .output import format_why_this_plan
+    why = format_why_this_plan(
+        total_view=total_view,
+        impl_view=impl_view,
+        investable_cash_usd=investable_cash_usd,
+        equity_cash_usd=equity_cash_usd,
+        defensive_cash_usd=defensive_cash_usd,
+        policy=policy,
+        monthly_cash_usd=monthly_cash_usd,
+        months_to_fix=m_fix,
+    )
+
+    return BuyPlan(
+        total_view=total_view,
+        implementable_view=impl_view,
+        investable_cash_usd=investable_cash_usd,
+        equity_cash_usd=equity_cash_usd,
+        defensive_cash_usd=defensive_cash_usd,
+        equity_instructions=equity_instructions,
+        defensive_instructions=defensive_instructions,
+        legacy_sell_flags=legacy_flags,
+        legacy_sell_trades=legacy_trades,
+        why_text=why,
+        warnings=warnings,
+        months_to_reenter_band=m_fix,
     )

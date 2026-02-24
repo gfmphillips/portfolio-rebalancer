@@ -32,3 +32,4 @@ tests/test_golden_real_fidelity.py
 *.pdf
 *.rtfd/
 Archive.zip
+portfolio-rebalancer-hybrid*.zip
