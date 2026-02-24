@@ -11,11 +11,15 @@ from rich.table import Table
 from .models import (
     HUNDRED,
     ZERO,
+    AllocationView,
+    BuyPlan,
     ConsolidationAnalysis,
     ConstraintCheck,
+    DefensiveMode,
     GermanTaxAnnotation,
     GermanTaxConfig,
     OutputConfig,
+    PolicyConfig,
     Position,
     RebalanceResult,
     SortKey,
@@ -723,3 +727,187 @@ def write_consolidation_markdown(analysis: ConsolidationAnalysis) -> list[str]:
         )
 
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Buy-plan output (policy-aware engine)
+# ---------------------------------------------------------------------------
+
+def format_why_this_plan(
+    total_view: AllocationView,
+    impl_view: AllocationView,
+    investable_cash_usd: Decimal,
+    equity_cash_usd: Decimal,
+    defensive_cash_usd: Decimal,
+    policy: PolicyConfig,
+    monthly_cash_usd: Decimal,
+    months_to_fix: "Decimal | None",
+) -> str:
+    """Generate a deterministic human-readable rationale for the buy plan."""
+    lines: list[str] = []
+
+    # Band status
+    stock_pct_display = float(total_view.stock_pct * 100)
+    target_pct_display = float(policy.target_stock_pct * 100)
+    band_display = float(policy.rebalance_band_abs * 100)
+    if total_view.within_bands:
+        lines.append(
+            f"Portfolio is within target bands "
+            f"(stocks: {stock_pct_display:.1f}%, target: {target_pct_display:.1f}% "
+            f"±{band_display:.1f}%)."
+        )
+    else:
+        direction = "overweight" if total_view.stock_drift > 0 else "underweight"
+        lines.append(
+            f"Portfolio is outside target bands "
+            f"(stocks: {stock_pct_display:.1f}%, target: {target_pct_display:.1f}% "
+            f"±{band_display:.1f}% — {direction})."
+        )
+
+    # Cash conversion
+    fx = float(policy.eurusd_fx)
+    eur = float(policy.investable_cash_eur)
+    usd = float(investable_cash_usd)
+    lines.append(f"Investable cash: ${usd:,.0f} (€{eur:,.0f} at {fx:.2f} EUR/USD).")
+
+    # Cash split rationale
+    if equity_cash_usd > 0 and defensive_cash_usd > 0:
+        lines.append(
+            f"Cash split proportionally: ${float(equity_cash_usd):,.0f} → equity, "
+            f"${float(defensive_cash_usd):,.0f} → defensive."
+        )
+    elif equity_cash_usd > 0:
+        lines.append(
+            f"Stocks are underweight — all ${float(equity_cash_usd):,.0f} directed to equity."
+        )
+    else:
+        lines.append(
+            f"Stocks are overweight — all ${float(defensive_cash_usd):,.0f} directed to defensive."
+        )
+
+    # Defensive mode description
+    mode = policy.defensive_mode
+    if mode == DefensiveMode.treasury_only:
+        lines.append(f"Defensive mode: treasury_only — ${float(defensive_cash_usd):,.0f} → TREASURY placeholder.")
+    elif mode == DefensiveMode.treasury_cd_split:
+        t_amt = float(defensive_cash_usd * policy.treasury_pct)
+        c_amt = float(defensive_cash_usd * policy.cd_pct)
+        lines.append(
+            f"Defensive mode: treasury_cd_split — ${t_amt:,.0f} → TREASURY, ${c_amt:,.0f} → CD placeholder."
+        )
+    else:  # ladder
+        n = len(policy.ladder_rungs_months)
+        rungs_str = ", ".join(f"{m}M" for m in policy.ladder_rungs_months)
+        lines.append(
+            f"Defensive mode: ladder ({rungs_str}, {policy.ladder_currency}) — "
+            f"{n} rungs of ${float(defensive_cash_usd / n if n else defensive_cash_usd):,.0f} each."
+        )
+
+    # IRA/Roth exclusion note
+    if impl_view.excluded_value > 0:
+        lines.append(
+            f"Note: ${float(impl_view.excluded_value):,.0f} in {impl_view.excluded_reason} "
+            f"is excluded from execution routing."
+        )
+
+    # Legacy ETF sell gate
+    if policy.allow_legacy_etf_sales:
+        lines.append("Legacy ETF sales are enabled — sell flags above may generate actual trades.")
+    else:
+        lines.append("Legacy ETF sales not recommended (allow_legacy_etf_sales=False).")
+
+    # Horizon projection
+    if monthly_cash_usd > 0 and months_to_fix is not None:
+        monthly_eur = float(policy.monthly_investable_cash_eur)
+        if not total_view.within_bands:
+            if months_to_fix > policy.horizon_months:
+                lines.append(
+                    f"At €{monthly_eur:,.0f}/month new money, the overweight takes "
+                    f"≈{int(months_to_fix)} months to correct; "
+                    f"exceeds {policy.horizon_months}-month horizon — "
+                    f"consider enabling allow_legacy_etf_sales."
+                )
+            else:
+                lines.append(
+                    f"At €{monthly_eur:,.0f}/month new money, the portfolio re-enters "
+                    f"the band in ≈{int(months_to_fix)} months "
+                    f"(within {policy.horizon_months}-month horizon)."
+                )
+    elif not total_view.within_bands:
+        lines.append(
+            "No monthly cash configured — cannot estimate time to re-enter the band."
+        )
+
+    return " ".join(lines)
+
+
+def write_buy_plan_csv(plan: BuyPlan, path: Path) -> None:
+    """Write the buy plan as a CSV file.
+
+    Structure:
+        Section 1: metadata header rows (generated_at, portfolio totals)
+        Section 2: equity instruction rows (side=equity)
+        Section 3: defensive placeholder rows (side=defensive)
+        Section 4: "Why this plan" comment rows
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+
+    generated_at = datetime.now(tz=None).strftime("%Y-%m-%d %H:%M")
+
+    # Section 1: metadata
+    writer.writerow(["# generated_at", generated_at])
+    writer.writerow([
+        "# total_portfolio",
+        f"${float(plan.total_view.total_value):,.0f}",
+        f"stocks: {float(plan.total_view.stock_pct * 100):.1f}%",
+        f"defensive: {float(plan.total_view.bond_pct * 100):.1f}%",
+        f"target_stocks: {float(plan.total_view.target_stock_pct * 100):.1f}%",
+    ])
+    writer.writerow([
+        "# implementable_portfolio",
+        f"${float(plan.implementable_view.total_value):,.0f}",
+        f"excluded: ${float(plan.implementable_view.excluded_value):,.0f}",
+        f"reason: {plan.implementable_view.excluded_reason}",
+    ])
+    writer.writerow([
+        "# investable_cash_usd", f"${float(plan.investable_cash_usd):,.0f}",
+        "equity", f"${float(plan.equity_cash_usd):,.0f}",
+        "defensive", f"${float(plan.defensive_cash_usd):,.0f}",
+    ])
+    if plan.months_to_reenter_band is not None:
+        writer.writerow(["# months_to_reenter_band", str(int(plan.months_to_reenter_band))])
+    writer.writerow([])
+
+    # Column headers
+    columns = [
+        "side", "action", "ticker", "shares", "est_value_usd",
+        "account", "account_type", "reasoning",
+    ]
+    writer.writerow(columns)
+
+    # Section 2: equity instructions
+    for t in plan.equity_instructions:
+        writer.writerow([
+            "equity", t.action, t.ticker,
+            str(t.shares) if t.shares > 0 else "",
+            f"${float(t.estimated_value):,.2f}",
+            t.account_name, t.account_type.value, t.reasoning,
+        ])
+
+    # Section 3: defensive placeholders
+    for t in plan.defensive_instructions:
+        writer.writerow([
+            "defensive", t.action, t.ticker,
+            "",  # no shares for placeholders
+            f"${float(t.estimated_value):,.2f}",
+            t.account_name, t.account_type.value, t.reasoning,
+        ])
+
+    # Section 4: why-this-plan as comment rows
+    writer.writerow([])
+    for sentence in plan.why_text.split(". "):
+        if sentence.strip():
+            writer.writerow(["# " + sentence.strip().rstrip(".")])
+
+    path.write_text(buf.getvalue())

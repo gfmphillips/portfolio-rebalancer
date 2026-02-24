@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field as dc_field
 from decimal import Decimal
 from enum import Enum
 from typing import Literal, NamedTuple
@@ -15,6 +16,55 @@ class AccountType(str, Enum):
     ROTH_401K = "roth_401k"
     FOUR_01K = "401k"
     HSA = "hsa"
+
+
+class InstrumentType(str, Enum):
+    """Buy/sell classification for a ticker.
+
+    Default is ``legacy_fund_or_etf`` (conservative: hold/sell only).
+    UCITS vs US ETF distinction is NOT auto-inferred; set via user overrides only.
+    """
+    legacy_fund_or_etf = "legacy_fund_or_etf"  # any fund/ETF; hold/sell only (DEFAULT)
+    us_equity          = "us_equity"            # individual stock; buyable
+    us_bond            = "us_bond"              # individual bond; buyable
+    us_treasury        = "us_treasury"          # Treasury; buyable
+    cd                 = "cd"                   # CD; buyable
+    cash               = "cash"                 # money-market; hold only
+    us_etf             = "us_etf"               # user override: US-domiciled ETF; sell-only
+    ucits_etf          = "ucits_etf"            # user override: UCITS/PFIC ETF; sell-only
+
+
+BUYABLE_TYPES: frozenset[InstrumentType] = frozenset({
+    InstrumentType.us_equity,
+    InstrumentType.us_bond,
+    InstrumentType.us_treasury,
+    InstrumentType.cd,
+})
+
+SELL_ONLY_TYPES: frozenset[InstrumentType] = frozenset({
+    InstrumentType.legacy_fund_or_etf,
+    InstrumentType.us_etf,
+    InstrumentType.ucits_etf,
+})
+
+# Cash is excluded from BLOCKED_BUY_TYPES; it is non-buyable by omission (not "blocked").
+BLOCKED_BUY_TYPES: frozenset[InstrumentType] = frozenset({
+    InstrumentType.legacy_fund_or_etf,
+    InstrumentType.us_etf,
+    InstrumentType.ucits_etf,
+})
+
+# Asset-class strings that count as "stock" or "defensive" in allocation math.
+# These are the source of truth; instrument_type controls buy-eligibility only.
+STOCK_ASSET_CLASSES: frozenset[str] = frozenset({"us_equity", "intl_equity", "reit"})
+DEFENSIVE_ASSET_CLASSES: frozenset[str] = frozenset({"bonds", "cash"})
+
+
+class DefensiveMode(str, Enum):
+    """How to generate defensive placeholder instructions."""
+    treasury_only     = "treasury_only"      # DEFAULT: single TREASURY row
+    treasury_cd_split = "treasury_cd_split"  # TREASURY + CD rows per treasury_pct/cd_pct
+    ladder            = "ladder"             # one row per rung in ladder_rungs_months
 
 
 TAX_ADVANTAGED = {
@@ -53,6 +103,9 @@ class TickerMapping(BaseModel):
     price: Decimal | None = None  # fallback price for preferred tickers not yet held
     german_fund_category: str | None = None  # "aktienfonds", "mischfonds", etc.
     is_accumulating: bool | None = None  # None = unknown
+    # Policy-aware fields (new):
+    instrument_type: InstrumentType = InstrumentType.legacy_fund_or_etf
+    never_want: bool = False  # user flags a holding they want to eventually exit
 
 
 class AllocationTarget(BaseModel):
@@ -213,3 +266,96 @@ class UnifiedConfig(NamedTuple):
     cash_config: CashConfig
     german_tax_config: GermanTaxConfig
     constraints_config: ConstraintsConfig
+
+
+# ---------------------------------------------------------------------------
+# Policy-aware engine data model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PolicyConfig:
+    """All settings for the new-money-only policy engine."""
+
+    # Allocation targets (as fractions, e.g. 0.80 = 80%)
+    target_stock_pct: Decimal                = Decimal("0.80")
+    target_bond_pct: Decimal                 = Decimal("0.20")
+    target_us_equity_pct_of_equity: Decimal  = Decimal("0.60")
+
+    # Cash inputs
+    bank_cash_target_eur: Decimal            = Decimal("100000")
+    investable_cash_eur: Decimal             = Decimal("0")
+    monthly_investable_cash_eur: Decimal     = Decimal("0")
+    eurusd_fx: Decimal                       = Decimal("1.10")
+
+    # Rebalance behaviour
+    rebalance_band_abs: Decimal              = Decimal("0.05")   # 5 pp absolute band
+    horizon_months: int                      = 18
+    basket_size: int                         = 75
+    min_trade_value: Decimal                 = Decimal("50")
+
+    # Feature flags
+    allow_international_basket: bool         = False
+    allow_legacy_etf_sales: bool             = False
+
+    # Account routing — set of AccountType.value strings that are buy-enabled
+    buy_enabled_account_types: frozenset     = dc_field(
+        default_factory=lambda: frozenset({"taxable"})
+    )
+
+    # Defensive allocation mode
+    defensive_mode: DefensiveMode            = DefensiveMode.treasury_only
+    treasury_pct: Decimal                    = Decimal("1.00")   # fraction; used for treasury_cd_split
+    cd_pct: Decimal                          = Decimal("0.00")   # fraction; used for treasury_cd_split
+    ladder_rungs_months: list[int]           = dc_field(
+        default_factory=lambda: [6, 12, 24, 36]
+    )
+    ladder_currency: str                     = "EUR"
+
+    # Basket metadata (informational; not used by engine logic)
+    basket_csv_path: str | None              = None
+    basket_version: str | None               = None   # "YYYY-MM-DD" extracted from filename
+
+
+@dataclass
+class BasketConstituent:
+    """One constituent of a stock basket CSV."""
+    ticker: str
+    target_weight: Decimal   # normalized to sum=1 before use
+    name: str    = ""
+    sector: str  = ""
+    country: str = ""
+    is_adr: bool = False
+
+
+@dataclass
+class AllocationView:
+    """Stock/defensive breakdown from one perspective (total or implementable)."""
+    label: str                  # "Total Portfolio" | "Implementable"
+    total_value: Decimal
+    stock_value: Decimal
+    defensive_value: Decimal
+    stock_pct: Decimal          # current stock fraction
+    bond_pct: Decimal           # current defensive fraction
+    target_stock_pct: Decimal
+    target_bond_pct: Decimal
+    stock_drift: Decimal        # stock_pct - target_stock_pct (positive = overweight)
+    within_bands: bool
+    excluded_value: Decimal     # value not counted in this view
+    excluded_reason: str        # e.g. "IRA/Roth accounts (buy-blocked)"
+
+
+@dataclass
+class BuyPlan:
+    """Output of new_money_plan() — everything needed to render the Buy Plan tab."""
+    total_view: AllocationView
+    implementable_view: AllocationView
+    investable_cash_usd: Decimal
+    equity_cash_usd: Decimal           # portion directed → equity buys
+    defensive_cash_usd: Decimal        # portion directed → defensive placeholders
+    equity_instructions: list[Trade]   # individual stock BUYs (or basket placeholder)
+    defensive_instructions: list[Trade]  # TREASURY/CD/ladder placeholder rows
+    legacy_sell_flags: list[str]       # advisory warnings (always built)
+    legacy_sell_trades: list[Trade]    # non-empty only if allow_legacy_etf_sales=True
+    why_text: str                      # human-readable rationale
+    warnings: list[str]
+    months_to_reenter_band: Decimal | None = None  # None if monthly_cash == 0
