@@ -33,3 +33,4 @@ tests/test_golden_real_fidelity.py
 *.rtfd/
 Archive.zip
 portfolio-rebalancer-hybrid*.zip
+examples/fidelity_positions_real.csv
