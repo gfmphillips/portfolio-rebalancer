@@ -252,21 +252,32 @@ class TestComputeBasketOrders:
         )
         assert all(t.action == "BUY" for t in trades)
 
-    def test_missing_price_skipped_silently(self):
-        """Tickers without a price entry are skipped (no crash)."""
+    def test_missing_price_emits_dollar_allocation(self):
+        """Tickers without a price get a dollar-allocation placeholder (shares=0)."""
         trades = compute_basket_orders(
             constituents=self._basket(),
             current_holdings={},
             equity_cash=Decimal("10000"),
             n_stocks=3,
             min_trade_value=Decimal("50"),
-            prices={"AAPL": Decimal("150")},  # MSFT and AMZN missing
+            prices={"AAPL": Decimal("150")},  # MSFT and AMZN have no price
             account_name="Taxable",
             account_type=AccountType.TAXABLE,
         )
         tickers = {t.ticker for t in trades}
-        assert "MSFT" not in tickers
-        assert "AMZN" not in tickers
+        # AAPL has price → normal share trade
+        assert "AAPL" in tickers
+        aapl = next(t for t in trades if t.ticker == "AAPL")
+        assert aapl.shares > ZERO
+        # MSFT and AMZN have no price → dollar-allocation placeholder rows
+        assert "MSFT" in tickers
+        assert "AMZN" in tickers
+        msft = next(t for t in trades if t.ticker == "MSFT")
+        amzn = next(t for t in trades if t.ticker == "AMZN")
+        assert msft.shares == ZERO
+        assert amzn.shares == ZERO
+        assert "No price" in msft.reasoning
+        assert "No price" in amzn.reasoning
 
     def test_empty_basket_returns_empty(self):
         trades = compute_basket_orders(

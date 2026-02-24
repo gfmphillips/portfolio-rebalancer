@@ -23,7 +23,7 @@ from .models import (
     ZERO,
 )
 
-TEMPLATE_HEADER = "ticker,target_weight,name,sector,country,is_adr"
+TEMPLATE_HEADER = "ticker,target_weight,price,name,sector,country,is_adr"
 REQUIRED_COLUMNS = {"ticker", "target_weight"}
 
 _ONE = Decimal("1")
@@ -34,13 +34,14 @@ def basket_template_csv() -> str:
     """Return a starter CSV template the user can fill in."""
     lines = [
         TEMPLATE_HEADER,
-        "# Weights can be 0-100 (percentages) or 0-1 (fractions); auto-normalized.",
+        "# Weights: 0-100 (percentages) or 0-1 (fractions); auto-normalized.",
+        "# price: optional — fill in to enable automatic share calculation.",
         "# Remove comment lines before uploading.",
-        "AAPL,7.00,Apple Inc.,Technology,US,false",
-        "MSFT,6.50,Microsoft Corp.,Technology,US,false",
-        "AMZN,5.00,Amazon.com Inc.,Consumer Discretionary,US,false",
-        "GOOGL,4.50,Alphabet Inc.,Communication Services,US,false",
-        "BRK.B,3.00,Berkshire Hathaway B,Financials,US,false",
+        "AAPL,7.00,189.50,Apple Inc.,Technology,US,false",
+        "MSFT,6.50,415.25,Microsoft Corp.,Technology,US,false",
+        "AMZN,5.00,196.80,Amazon.com Inc.,Consumer Discretionary,US,false",
+        "GOOGL,4.50,175.60,Alphabet Inc.,Communication Services,US,false",
+        "BRK.B,3.00,449.00,Berkshire Hathaway B,Financials,US,false",
     ]
     return "\n".join(lines) + "\n"
 
@@ -108,11 +109,23 @@ def load_basket_csv(
                 f"Negative weight for ticker '{ticker}' at row {i}."
             )
 
+        # Optional price column
+        price_raw = row.get("price", "").strip()
+        price_val: Decimal | None = None
+        if price_raw:
+            try:
+                p = Decimal(price_raw.replace("$", "").replace(",", ""))
+                if p > ZERO:
+                    price_val = p
+            except Exception:
+                pass  # ignore unparseable price; leave as None
+
         extras = {
             "name":    row.get("name", "").strip(),
             "sector":  row.get("sector", "").strip(),
             "country": row.get("country", "").strip(),
             "is_adr":  row.get("is_adr", "false").strip().lower() in {"true", "1", "yes"},
+            "price":   price_val,
         }
         raw.append((ticker, w, extras))
 
@@ -154,19 +167,11 @@ def compute_basket_orders(
 ) -> list[Trade]:
     """Compute top-up-underweight buy orders for the basket.
 
-    Args:
-        constituents: All basket constituents (pre-normalized weights).
-        current_holdings: Basket stocks already held in buy-enabled accounts.
-            Keys are ticker symbols.
-        equity_cash: New cash (USD) to deploy into the basket.
-        n_stocks: Maximum number of basket positions to include.
-        min_trade_value: Minimum dollar value per trade (skip smaller orders).
-        prices: {ticker: price} — must include all top-N tickers.
-        account_name: Target account name for generated trades.
-        account_type: Target account type for generated trades.
-
-    Returns:
-        List of BUY Trade objects (instrument_type=us_equity).
+    Price resolution (in order of priority):
+        1. prices dict (live or user-supplied externally)
+        2. constituent.price (from CSV ``price`` column)
+        3. No price → output a dollar-allocation row (shares=0, estimated_value=dollar_target,
+           reasoning="No price — allocate $X manually")
 
     Algorithm — top-up-underweights:
         1. Select top-N constituents by target_weight; renormalize.
@@ -174,8 +179,8 @@ def compute_basket_orders(
         3. target_value[i] = w_i * (V + equity_cash)
         4. current_value[i] = held_shares * price  (0 if not held)
         5. additional_needed[i] = max(0, target_value[i] - current_value[i])
-        6. shares[i] = floor(additional_needed[i] / price[i])
-        7. Skip if shares[i] * price[i] < min_trade_value
+        6a. If price known: shares[i] = floor(additional_needed / price); skip if cost < min_trade_value
+        6b. If no price: emit a dollar-allocation placeholder row (shares=0)
     """
     if not constituents or equity_cash < ZERO:
         return []
@@ -207,9 +212,11 @@ def compute_basket_orders(
 
     for constituent, weight in selected:
         ticker = constituent.ticker
+
+        # Resolve price: external dict → constituent CSV column → None
         price = prices.get(ticker)
         if price is None or price <= ZERO:
-            continue  # no price available; skip silently
+            price = constituent.price if constituent.price and constituent.price > ZERO else None
 
         target_value = (weight * combined_target).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -221,16 +228,15 @@ def compute_basket_orders(
         if additional_needed <= ZERO:
             continue
 
-        shares = (additional_needed / price).to_integral_value(rounding=ROUND_DOWN)
-        if shares <= ZERO:
-            continue
-
-        actual_cost = (shares * price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if actual_cost < min_trade_value:
-            continue
-
-        trades.append(
-            Trade(
+        if price is not None and price > ZERO:
+            # Full share calculation
+            shares = (additional_needed / price).to_integral_value(rounding=ROUND_DOWN)
+            if shares <= ZERO:
+                continue
+            actual_cost = (shares * price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if actual_cost < min_trade_value:
+                continue
+            trades.append(Trade(
                 account_name=account_name,
                 account_type=account_type,
                 ticker=ticker,
@@ -239,9 +245,24 @@ def compute_basket_orders(
                 estimated_value=actual_cost,
                 reasoning=(
                     f"Basket top-up: target ${target_value}, "
-                    f"current ${current_value}, adding ${actual_cost}"
+                    f"current ${current_value}, buy {shares} shares @ ${price}"
                 ),
-            )
-        )
+            ))
+        else:
+            # No price available — emit dollar-allocation placeholder
+            if additional_needed < min_trade_value:
+                continue
+            trades.append(Trade(
+                account_name=account_name,
+                account_type=account_type,
+                ticker=ticker,
+                action="BUY",
+                shares=ZERO,
+                estimated_value=additional_needed,
+                reasoning=(
+                    f"No price — allocate ${additional_needed} manually "
+                    f"(target ${target_value}, current ${current_value})"
+                ),
+            ))
 
     return trades

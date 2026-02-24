@@ -13,7 +13,7 @@ import yaml
 from rebalancer.basket import basket_template_csv, load_basket_csv
 from rebalancer.config import load_mapping
 from rebalancer.engine import compute_allocation_views, new_money_plan
-from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
+from rebalancer.fx import BankCashAccount, convert_bank_cash_to_positions
 from rebalancer.models import (
     TAX_ADVANTAGED,
     AccountType,
@@ -172,7 +172,8 @@ def _load_default_mapping() -> dict[str, TickerMapping]:
 def _parse_csv_bytes(raw_bytes: bytes) -> tuple[list[Position], list[str]]:
     text = raw_bytes.decode("utf-8", errors="replace")
     try:
-        positions = parse_fidelity_csv(text)
+        tmp_path = _save_temp(text, ".csv")
+        positions = parse_fidelity_csv(tmp_path)
         return positions, []
     except Exception as exc:
         return [], [str(exc)]
@@ -302,13 +303,12 @@ with st.sidebar:
     # Bank EUR cash as investable position
     if inv_eur > 0:
         bank_pos = BankCashAccount(
+            currency="EUR",
+            amount=new_inv,
             account_name="Bank EUR",
-            eur_amount=new_inv,
-            is_investable=True,
         )
-        st.session_state.setdefault("bank_positions", [])
-        bank_positions = convert_bank_cash_to_positions([bank_pos], float(new_fx))
-        # Inject into positions if not already there
+        bank_positions = convert_bank_cash_to_positions([bank_pos], new_fx)
+        # Replace any existing synthetic EUR cash position with the updated one
         base = [p for p in st.session_state["positions"] if not p.ticker.startswith("CASH-EUR")]
         st.session_state["positions"] = base + bank_positions
 
@@ -691,6 +691,41 @@ with tab3:
     elif plan is None:
         st.info("Click **⚡ Compute Buy Plan** in the sidebar to generate a plan.", icon="💡")
     else:
+        # Basket status diagnostics
+        basket_in_session = st.session_state.get("basket")
+        basket_loaded = bool(basket_in_session)
+        num_constituents = len(basket_in_session) if basket_in_session else 0
+        missing_prices: list[str] = []
+        if basket_in_session:
+            missing_prices = [c.ticker for c in basket_in_session if c.price is None or c.price <= ZERO]
+        has_issue = not basket_loaded or bool(missing_prices)
+        with st.expander("🧺 Basket status", expanded=has_issue):
+            col_b1, col_b2 = st.columns(2)
+            col_b1.metric("Basket loaded", "Yes" if basket_loaded else "No")
+            col_b2.metric("Constituents", num_constituents)
+            if not basket_loaded:
+                st.info(
+                    "No basket CSV loaded — equity allocation will show a single "
+                    "**US_STOCK_BASKET** placeholder. Upload a basket CSV in **Settings** to "
+                    "expand into per-ticker buy orders.",
+                    icon="📂",
+                )
+            elif missing_prices:
+                st.warning(
+                    f"**{len(missing_prices)} ticker(s) have no price:** "
+                    f"{', '.join(missing_prices)}.\n\n"
+                    "Add a `price` column to your basket CSV (e.g. `AAPL,7.00,189.50,...`) "
+                    "to get exact share counts. Without prices, those tickers will show a "
+                    "**dollar-allocation** row (no share count) — execute manually at your broker.",
+                    icon="💲",
+                )
+            else:
+                st.success(
+                    f"Basket with {num_constituents} constituents — all prices available. "
+                    "Per-ticker share orders will be generated.",
+                    icon="✅",
+                )
+
         # Warnings
         if plan.warnings:
             for w in plan.warnings:

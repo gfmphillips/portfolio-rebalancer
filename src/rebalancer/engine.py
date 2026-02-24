@@ -1149,7 +1149,7 @@ def new_money_plan(
 
     equity_instructions: list[Trade] = []
     if equity_cash_usd >= policy.min_trade_value:
-        if basket and prices:
+        if basket:
             # Build {ticker: Position} for basket holdings in buy-enabled accounts
             basket_tickers = {c.ticker for c in basket}
             current_basket_holdings = {
@@ -1157,13 +1157,21 @@ def new_money_plan(
                 for p in impl_positions
                 if p.ticker in basket_tickers
             }
+            # Price resolution: external prices dict takes priority;
+            # constituent.price (from CSV `price` column) fills any gaps.
+            constituent_prices = {
+                c.ticker: c.price
+                for c in basket
+                if c.price is not None and c.price > ZERO
+            }
+            effective_prices = {**constituent_prices, **(prices or {})}
             equity_instructions = compute_basket_orders(
                 constituents=basket,
                 current_holdings=current_basket_holdings,
                 equity_cash=equity_cash_usd,
                 n_stocks=policy.basket_size,
                 min_trade_value=policy.min_trade_value,
-                prices=prices,
+                prices=effective_prices,
                 account_name=buy_account_name,
                 account_type=buy_account_type,
             )

@@ -320,11 +320,12 @@ class PolicyConfig:
 class BasketConstituent:
     """One constituent of a stock basket CSV."""
     ticker: str
-    target_weight: Decimal   # normalized to sum=1 before use
-    name: str    = ""
-    sector: str  = ""
-    country: str = ""
-    is_adr: bool = False
+    target_weight: Decimal        # normalized to sum=1 before use
+    name: str       = ""
+    sector: str     = ""
+    country: str    = ""
+    is_adr: bool    = False
+    price: Decimal | None = None  # optional per-constituent price from CSV `price` column
 
 
 @dataclass
