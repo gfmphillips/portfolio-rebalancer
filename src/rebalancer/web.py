@@ -11,6 +11,7 @@ import pandas as pd
 import yaml
 
 from rebalancer.config import load_mapping, load_unified_config
+from rebalancer.theme import inject_theme
 from rebalancer.prices import fetch_prices
 from rebalancer.engine import CashPools, EMERGENCY_TICKERS, _build_initial_cash_pools, analyze_consolidation, build_run_metadata, project_positions, rebalance
 from rebalancer.fx import BankCashAccount, build_bank_cash_positions, convert_bank_cash_to_positions, fetch_fx_rate
@@ -47,6 +48,7 @@ st.set_page_config(
     page_icon="\u2696\ufe0f",
     layout="wide",
 )
+inject_theme()
 
 # ---------------------------------------------------------------------------
 # Temp file cleanup
@@ -415,11 +417,12 @@ for ac in ASSET_CLASSES:
 
 alloc_sum = sum(alloc_values.values())
 if alloc_sum == 100:
-    st.sidebar.success(f"Total: {alloc_sum}%")
+    st.sidebar.success(f"Total: {alloc_sum}%  ✓")
 elif alloc_sum > 100:
-    st.sidebar.error(f"Total: {alloc_sum}% — must equal 100%")
+    st.sidebar.error(f"Total: {alloc_sum}% — reduce by {alloc_sum - 100}%")
 else:
-    st.sidebar.warning(f"Total: {alloc_sum}% — must equal 100%")
+    remaining = 100 - alloc_sum
+    st.sidebar.warning(f"Total: {alloc_sum}% — {remaining}% remaining to allocate")
 
 # --- 4. Fund Classification ---
 st.sidebar.header("4. Fund Classification")
@@ -936,6 +939,17 @@ with tab_overview:
                     icon="⚠️",
                 )
 
+        unclassified = sorted({
+            p.ticker for p in all_positions
+            if not mapping.get(p.ticker) and not p.ticker.startswith("CASH-")
+        })
+        if unclassified:
+            st.warning(
+                f"**{len(unclassified)} unclassified ticker(s):** {', '.join(unclassified)} — "
+                "add them in the **Fund Classification** section in the sidebar to include them in your allocation analysis.",
+                icon="⚠️",
+            )
+
         # Separate investable from emergency — rebalancing only touches investable,
         # so the allocation chart should match exactly what rebalancing operates on.
         investable_positions = [p for p in all_positions if p.ticker not in EMERGENCY_TICKERS]
@@ -1069,6 +1083,24 @@ with tab_rebalance:
             for w in result.warnings:
                 st.warning(w)
 
+        # Capital gains warning — shown prominently before the drift chart
+        if result.trades:
+            _taxable_gain_sells = [
+                t for t in result.trades
+                if t.account_type not in TAX_ADVANTAGED
+                and t.action == "SELL"
+                and t.estimated_gain_loss is not None
+                and t.estimated_gain_loss > 0
+            ]
+            if _taxable_gain_sells:
+                _top_net_gain = sum(_dec(t.estimated_gain_loss) for t in _taxable_gain_sells)
+                st.warning(
+                    f"**Heads up — estimated capital gain:** The recommended sells include taxable positions "
+                    f"with a net estimated gain of **{_format_currency(Decimal(str(_top_net_gain)), cur_prec)}**. "
+                    "You may owe taxes on this amount. Review the trade plan and tax impact section below before executing.",
+                    icon="⚠️",
+                )
+
         st.subheader("Allocation vs Target")
         st.caption("Drift shows how far each asset class has moved from your target. A positive bar means you own too much (a candidate to sell). A negative bar means you own too little (a candidate to buy). The dashed orange lines show where a rebalance is triggered.")
 
@@ -1119,12 +1151,12 @@ with tab_rebalance:
                     "Asset Class": cls,
                     "Current %": f"{_dec(current):.2f}",
                     "Target %": f"{_dec(target):.2f}",
-                    "Drift (abs)": f"{_dec(drift):+.2f}pp",
+                    "Drift (abs)": f"{_dec(drift):+.2f} ppts",
                     "Drift (rel)": f"{rel_drift:.1f}%",
                 }
             )
         st.dataframe(alloc_rows, width="stretch", hide_index=True)
-        st.caption("**Drift (abs)** = percentage point difference from target. **Drift (rel)** = absolute drift as a % of the target itself. Either exceeding its threshold triggers a rebalance for that class.")
+        st.caption("**Drift (abs)** = percentage points from target (ppts). **Drift (rel)** = absolute drift as a % of the target itself. Either exceeding its threshold triggers a rebalance for that class.")
 
         # Action Summary
         st.subheader("Action Summary")
@@ -1146,16 +1178,23 @@ with tab_rebalance:
                     reasons.append(f"{rel_d:.0f}% rel")
                 breached.append(f"**{cls}** ({', '.join(reasons)})")
 
-        if breached:
-            st.markdown(f"Rebalancing triggered for: {', '.join(breached)}")
-        else:
-            st.success("No action needed — all asset classes are within your drift thresholds. Check back after your next contribution or after significant market movement.")
-
         # Idle cash
         cash_positions = [p for p in all_positions if mapping.get(p.ticker) and mapping[p.ticker].asset_class == "cash"]
         total_cash = sum(_dec(p.market_value) for p in cash_positions)
-        if total_cash > 0:
-            st.markdown(f"Idle cash available: **{_format_currency(Decimal(str(total_cash)), cur_prec)}** across {len(cash_positions)} account(s)")
+
+        if breached:
+            st.markdown(f"Rebalancing triggered for: {', '.join(breached)}")
+            if total_cash > 0:
+                st.markdown(f"Idle cash available: **{_format_currency(Decimal(str(total_cash)), cur_prec)}** across {len(cash_positions)} account(s)")
+        elif total_cash > 0:
+            st.info(
+                f"Your allocation is within thresholds, but you have "
+                f"**{_format_currency(Decimal(str(total_cash)), cur_prec)}** in idle cash across "
+                f"{len(cash_positions)} account(s). Consider deploying it into your target funds when ready.",
+                icon="ℹ️",
+            )
+        else:
+            st.success("No action needed — all asset classes are within your drift thresholds. Check back after your next contribution or after significant market movement.")
 
         # Trade breakdown by account type
         if result.trades:
@@ -1165,15 +1204,6 @@ with tab_rebalance:
                 f"Trades: **{len(retirement_trades)}** in retirement accounts, "
                 f"**{len(taxable_trades)}** in taxable accounts"
             )
-            if taxable_trades:
-                taxable_sells = [t for t in taxable_trades if t.action == "SELL" and t.estimated_gain_loss is not None]
-                net_gain = sum(_dec(t.estimated_gain_loss) for t in taxable_sells)
-                if net_gain > 0:
-                    st.warning(
-                        f"Heads up: these taxable sells have an estimated net capital gain of "
-                        f"{_format_currency(Decimal(str(net_gain)), cur_prec)}. You may owe taxes "
-                        f"on this amount. Review the estimated tax impact below before executing."
-                    )
 
         # Stacked bar: current vs target
         fig4 = go.Figure()
@@ -1264,9 +1294,17 @@ with tab_trades:
 
             # --- How-to ---
             st.info(
-                "**How to execute:** Work through each step in order. "
-                "Finish every **sell** before placing any **buy** — sells free up the cash that funds the buys. "
-                "Steps are grouped by account: complete all trades in one account before moving to the next."
+                "**How to execute:** Work through each step in order.\n\n"
+                "1. **Complete all sells first** — sell proceeds fund the buys. Placing a buy before "
+                "the sell settles can leave your account short of cash.\n"
+                "2. **Allow time for settlement** — US equity trades settle in **T+2 business days** "
+                "(two business days after the trade date). If your sells and buys are in the same "
+                "account, your broker may let you place the buy immediately using unsettled funds "
+                "(\"good faith\" trading) — check your broker's policy.\n"
+                "3. **Parallel accounts are fine** — if Phase 1 includes sells across multiple accounts, "
+                "you can execute those sells simultaneously. Same for Phase 2 buys.\n"
+                "4. **Stay within accounts** — each retirement account uses its own cash. No transfers "
+                "between accounts are needed."
             )
 
             # --- Build cash pool tracking ---
@@ -1318,7 +1356,7 @@ with tab_trades:
             # --- Sell phase ---
             if sell_steps:
                 st.divider()
-                st.markdown(f"### Phase 1: Sells ({len(sell_steps)} trades across {len(sell_accounts)} accounts)")
+                st.markdown(f"### Phase 1: Sells ({len(sell_steps)} trades — {_format_currency(total_sell, cur_prec)} total)")
                 st.caption("Sell positions that have grown beyond your target allocation. The cash you raise here is what funds the buys in Phase 2. Proceeds stay within the same account.")
 
                 current_account = None
@@ -1365,7 +1403,7 @@ with tab_trades:
             # --- Buy phase ---
             if buy_steps:
                 st.divider()
-                st.markdown(f"### Phase 2: Buys ({len(buy_steps)} trades across {len(buy_accounts)} accounts)")
+                st.markdown(f"### Phase 2: Buys ({len(buy_steps)} trades — {_format_currency(total_buy, cur_prec)} total)")
                 st.caption("Buy into asset classes that are below your target. Each buy uses cash from within the same account — no transfers between accounts are needed.")
 
                 current_account = None
@@ -1617,6 +1655,12 @@ with tab_projection:
 
             st.subheader("What Your Portfolio Will Look Like After These Trades")
             st.caption("A preview based on the trade plan above. Actual results will vary slightly due to price changes between now and when you execute the trades.")
+            _hidden_in_proj = len(result.trades) - len(display_trades)
+            if _hidden_in_proj > 0:
+                st.caption(
+                    f"Based on {len(display_trades)} trades — {_hidden_in_proj} small trade(s) "
+                    f"below the {_format_currency(Decimal(str(config.min_trade_value)), cur_prec)} minimum are excluded from this projection."
+                )
 
             col1, col2, col3 = st.columns(3)
             col1.metric(
@@ -1681,8 +1725,8 @@ with tab_projection:
                     "Current %": f"{_dec(current_pct):.2f}",
                     "Projected %": f"{_dec(projected_pct):.2f}",
                     "Target %": f"{_dec(target_pct):.2f}",
-                    "Current Drift": f"{_dec(current_drift):+.2f}pp",
-                    "Projected Drift": f"{_dec(projected_drift):+.2f}pp",
+                    "Current Drift": f"{_dec(current_drift):+.2f} ppts",
+                    "Projected Drift": f"{_dec(projected_drift):+.2f} ppts",
                 })
             st.dataframe(proj_rows, width="stretch", hide_index=True)
             st.caption("After these trades, each asset class should be very close to 0% drift. If you still see significant drift for a class, it may mean there wasn't enough cash to fully rebalance it — consider adding more investable cash in the sidebar.")
